@@ -20,62 +20,36 @@ package config
 
 import (
 	"testing"
-
-	"github.com/wso2/api-platform/gateway/gateway-controller/pkg/constants"
 )
 
 func TestValidateAPIKeyConfig(t *testing.T) {
 	tests := []struct {
 		name                 string
 		apiKeysPerUserPerAPI int
-		algorithm            string
 		expectError          bool
 	}{
 		{
-			name:                 "no hashing (empty algorithm)",
-			apiKeysPerUserPerAPI: 10,
-			algorithm:            "",
-			expectError:          false,
-		},
-		{
-			name:                 "valid SHA256 algorithm",
-			apiKeysPerUserPerAPI: 5,
-			algorithm:            constants.HashingAlgorithmSHA256,
-			expectError:          false,
-		},
-		{
-			name:                 "invalid algorithm",
-			apiKeysPerUserPerAPI: 10,
-			algorithm:            "invalid-algorithm",
-			expectError:          true,
-		},
-		{
-			name:                 "case-insensitive valid algorithm",
-			apiKeysPerUserPerAPI: 10,
-			algorithm:            "SHA256", // uppercase
-			expectError:          false,
-		},
-		{
 			name:                 "zero api keys per user per api",
 			apiKeysPerUserPerAPI: 0,
-			algorithm:            constants.HashingAlgorithmSHA256,
 			expectError:          true,
 		},
 		{
 			name:                 "negative api keys per user per api",
 			apiKeysPerUserPerAPI: -1,
-			algorithm:            constants.HashingAlgorithmSHA256,
 			expectError:          true,
+		},
+		{
+			name:                 "valid api keys per user per api",
+			apiKeysPerUserPerAPI: 10,
+			expectError:          false,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// Create a minimal config with API key hashing settings
 			config := &Config{
 				APIKey: APIKeyConfig{
 					APIKeysPerUserPerAPI: tt.apiKeysPerUserPerAPI,
-					Algorithm:            tt.algorithm,
 				},
 			}
 

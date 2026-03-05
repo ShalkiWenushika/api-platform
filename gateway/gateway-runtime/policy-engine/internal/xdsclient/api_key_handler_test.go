@@ -51,16 +51,15 @@ func createValidAPIKeyStateResource(t *testing.T) *anypb.Any {
 		Timestamp: time.Now().Unix(),
 		APIKeys: []APIKeyData{
 			{
-				ID:         "key-1",
-				Name:       "test-key",
-				APIKey:     apikey.ComputeAPIKeyHash("test-api-key-value"),
-				APIId:      "api-1",
-				Operations: `["*"]`,
-				Status:     "active",
-				CreatedAt:  time.Now(),
-				CreatedBy:  "admin",
-				UpdatedAt:  time.Now(),
-				Source:     "external",
+				ID:        "key-1",
+				Name:      "test-key",
+				APIKey:    apikey.ComputeAPIKeyHash("test-api-key-value"),
+				APIId:     "api-1",
+				Status:    "active",
+				CreatedAt: time.Now(),
+				CreatedBy: "admin",
+				UpdatedAt: time.Now(),
+				Source:    "external",
 			},
 		},
 	}
@@ -196,7 +195,7 @@ func TestHandleAPIKeyOperation_ValidResource(t *testing.T) {
 	assert.NoError(t, err)
 
 	// Verify the API key was stored
-	valid, err := store.ValidateAPIKey("api-1", "*", "GET", "test-api-key-value")
+	valid, err := store.ValidateAPIKey("api-1", "test-api-key-value")
 	assert.NoError(t, err)
 	assert.True(t, valid)
 }
@@ -209,16 +208,15 @@ func TestReplaceAllAPIKeys_ClearsExistingKeys(t *testing.T) {
 
 	// Pre-populate with an existing key (hash the API key before storing)
 	existingKey := &apikey.APIKey{
-		ID:         "old-key",
-		Name:       "old-key-name",
-		APIKey:     apikey.ComputeAPIKeyHash("old-api-key-value"), // Hash before storing
-		APIId:      "api-1",
-		Operations: `["*"]`,
-		Status:     apikey.Active,
-		CreatedAt:  time.Now(),
-		CreatedBy:  "admin",
-		UpdatedAt:  time.Now(),
-		Source:     "external",
+		ID:        "old-key",
+		Name:      "old-key-name",
+		APIKey:    apikey.ComputeAPIKeyHash("old-api-key-value"), // Hash before storing
+		APIId:     "api-1",
+		Status:    apikey.Active,
+		CreatedAt: time.Now(),
+		CreatedBy: "admin",
+		UpdatedAt: time.Now(),
+		Source:    "external",
 	}
 	err := store.StoreAPIKey("api-1", existingKey)
 	require.NoError(t, err)
@@ -226,16 +224,15 @@ func TestReplaceAllAPIKeys_ClearsExistingKeys(t *testing.T) {
 	// Replace with new keys
 	newKeys := []APIKeyData{
 		{
-			ID:         "new-key",
-			Name:       "new-key-name",
-			APIKey:     apikey.ComputeAPIKeyHash("new-api-key-value"),
-			APIId:      "api-1",
-			Operations: `["*"]`,
-			Status:     "active",
-			CreatedAt:  time.Now(),
-			CreatedBy:  "admin",
-			UpdatedAt:  time.Now(),
-			Source:     "external",
+			ID:        "new-key",
+			Name:      "new-key-name",
+			APIKey:    apikey.ComputeAPIKeyHash("new-api-key-value"),
+			APIId:     "api-1",
+			Status:    "active",
+			CreatedAt: time.Now(),
+			CreatedBy: "admin",
+			UpdatedAt: time.Now(),
+			Source:    "external",
 		},
 	}
 
@@ -243,11 +240,11 @@ func TestReplaceAllAPIKeys_ClearsExistingKeys(t *testing.T) {
 	assert.NoError(t, err)
 
 	// Old key should no longer be valid
-	valid, _ := store.ValidateAPIKey("api-1", "*", "GET", "old-api-key-value")
+	valid, _ := store.ValidateAPIKey("api-1", "old-api-key-value")
 	assert.False(t, valid)
 
 	// New key should be valid
-	valid, err = store.ValidateAPIKey("api-1", "*", "GET", "new-api-key-value")
+	valid, err = store.ValidateAPIKey("api-1", "new-api-key-value")
 	assert.NoError(t, err)
 	assert.True(t, valid)
 }
@@ -260,16 +257,15 @@ func TestReplaceAllAPIKeys_EmptyList(t *testing.T) {
 
 	// Pre-populate (hash the API key before storing)
 	existingKey := &apikey.APIKey{
-		ID:         "key-1",
-		Name:       "key-name",
-		APIKey:     apikey.ComputeAPIKeyHash("api-key-value"), // Hash before storing
-		APIId:      "api-1",
-		Operations: `["*"]`,
-		Status:     apikey.Active,
-		CreatedAt:  time.Now(),
-		CreatedBy:  "admin",
-		UpdatedAt:  time.Now(),
-		Source:     "external",
+		ID:        "key-1",
+		Name:      "key-name",
+		APIKey:    apikey.ComputeAPIKeyHash("api-key-value"), // Hash before storing
+		APIId:     "api-1",
+		Status:    apikey.Active,
+		CreatedAt: time.Now(),
+		CreatedBy: "admin",
+		UpdatedAt: time.Now(),
+		Source:    "external",
 	}
 	err := store.StoreAPIKey("api-1", existingKey)
 	require.NoError(t, err)
@@ -279,6 +275,6 @@ func TestReplaceAllAPIKeys_EmptyList(t *testing.T) {
 	assert.NoError(t, err)
 
 	// Key should no longer be valid
-	valid, _ := store.ValidateAPIKey("api-1", "*", "GET", "api-key-value")
+	valid, _ := store.ValidateAPIKey("api-1", "api-key-value")
 	assert.False(t, valid)
 }

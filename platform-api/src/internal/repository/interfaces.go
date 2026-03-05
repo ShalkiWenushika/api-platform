@@ -187,3 +187,13 @@ type LLMProxyRepository interface {
 	Delete(proxyID, orgUUID string) error
 	Exists(proxyID, orgUUID string) (bool, error)
 }
+
+// APIKeyRepository defines the interface for API key data operations
+type APIKeyRepository interface {
+	CreateAPIKey(apiKey *model.APIKey) error
+	GetAPIKeyByID(id, artifactUUID string) (*model.APIKey, error)
+	GetAPIKeyByName(artifactUUID, name string) (*model.APIKey, error)
+	GetAPIKeysByArtifact(artifactUUID string) ([]*model.APIKey, error)
+	UpdateAPIKey(apiKey *model.APIKey) error
+	DeleteAPIKey(id, artifactUUID string) error
+}

@@ -41,17 +41,16 @@ type APIKeyCreatedEvent struct {
 	// Name is the unique name of the API key
 	Name string `json:"name,omitempty"`
 
-	// DisplayName is the display name of the API key
-	DisplayName string `json:"displayName,omitempty"`
+	// ApiKeyHashes contains the hashed API key values (keyed by algorithm name)
+	// Example: {"sha256": "abc123...", "sha512": "def456..."}
+	// Hashing is done in platform-api before sending to gateways
+	ApiKeyHashes map[string]string `json:"apiKeyHashes"`
 
-	// ApiKey is the plain API key value (hashing happens in the gateway)
-	ApiKey string `json:"apiKey"`
+	// Masked api key to display
+	MaskedApiKey string `json:"maskedApiKey"`
 
 	// ExternalRefId is an optional reference ID for tracing purposes
 	ExternalRefId *string `json:"externalRefId,omitempty"`
-
-	// Operations specifies which API operations this key can access (default: "*")
-	Operations string `json:"operations"`
 
 	// ExpiresAt is the optional expiration time in ISO 8601 format
 	ExpiresAt *string `json:"expiresAt,omitempty"`
@@ -79,21 +78,28 @@ type APIKeyUpdatedEvent struct {
 	// KeyName is the unique name of the API key being updated
 	KeyName string `json:"keyName"`
 
-	// DisplayName is the display name of the API key
-	DisplayName string `json:"displayName,omitempty"`
-
 	// ExternalRefId is an optional reference ID for tracing purposes
 	ExternalRefId *string `json:"externalRefId,omitempty"`
-
-	// Operations specifies which API operations this key can access (default: "*")
-	Operations string `json:"operations"`
 
 	// ExpiresIn is the optional expiration duration
 	ExpiresIn *ExpiresInDuration `json:"expiresIn,omitempty"`
 
-	// ApiKey is the new plain API key value (hashing happens in the gateway)
-	ApiKey string `json:"apiKey"`
+	// ApiKeyHashes contains the hashed API key values (keyed by algorithm name)
+	// Example: {"sha256": "abc123...", "sha512": "def456..."}
+	// Hashing is done in platform-api before sending to gateways
+	ApiKeyHashes map[string]string `json:"apiKeyHashes"`
 
 	// ExpiresAt is the optional new expiration time in ISO 8601 format
 	ExpiresAt *string `json:"expiresAt,omitempty"`
+}
+
+// APIKeysBatchSyncEvent represents the payload for "apikeys.sync" event type.
+// This event is sent when multiple API keys need to be synced to a gateway in a single batch.
+// Typically used when deploying an API to a new gateway for the first time.
+type APIKeysBatchSyncEvent struct {
+	// ApiId identifies the API these keys belong to
+	ApiId string `json:"apiId"`
+
+	// ApiKeys is the array of API keys to sync
+	ApiKeys []APIKeyCreatedEvent `json:"apiKeys"`
 }

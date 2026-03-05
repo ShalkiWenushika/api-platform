@@ -106,8 +106,8 @@ func ValidateAPIKeyName(name string) error {
 	return nil
 }
 
-// GenerateAPIKeyName generates a URL-safe name from a display name.
-// Transforms the displayName by:
+// GenerateAPIKeyName generates a URL-safe name from an input string (e.g. "<apiHandle>-key").
+// Transforms the input by:
 // - Trimming whitespace
 // - Converting to lowercase
 // - Replacing spaces and underscores with hyphens
@@ -115,8 +115,8 @@ func ValidateAPIKeyName(name string) error {
 // - Collapsing consecutive hyphens
 // - Trimming leading/trailing hyphens
 // - Enforcing length constraints (3-63 chars)
-func GenerateAPIKeyName(displayName string) (string, error) {
-	trimmed := strings.TrimSpace(displayName)
+func GenerateAPIKeyName(input string) (string, error) {
+	trimmed := strings.TrimSpace(input)
 	// Convert to lowercase
 	name := strings.ToLower(trimmed)
 

@@ -39,6 +39,12 @@ type sqlStore struct {
 
 	rebindQuery func(string) string
 
+	// jsonExtractText returns a backend-specific SQL expression to extract a text
+	// value from a JSON column. E.g. jsonExtractText("api_key_hashes", "sha256")
+	// returns "json_extract(api_key_hashes, '$.sha256')" for SQLite or
+	// "api_key_hashes->>'sha256'" for PostgreSQL.
+	jsonExtractText func(column, jsonKey string) string
+
 	isConfigUniqueViolation      func(error) bool
 	isCertificateUniqueViolation func(error) bool
 	isTemplateUniqueViolation    func(error) bool
@@ -54,7 +60,10 @@ func newSQLStore(db *sql.DB, logger *slog.Logger, backendName string, gatewayId 
 		gatewayId:   gatewayId,
 		backendName: backendName,
 		// Defaults are identity/false; backends can override.
-		rebindQuery:                  func(query string) string { return query },
+		rebindQuery: func(query string) string { return query },
+		jsonExtractText: func(column, jsonKey string) string {
+			return fmt.Sprintf("json_extract(%s, '$.%s')", column, jsonKey)
+		},
 		isConfigUniqueViolation:      func(error) bool { return false },
 		isCertificateUniqueViolation: func(error) bool { return false },
 		isTemplateUniqueViolation:    func(error) bool { return false },
@@ -1056,30 +1065,32 @@ func (s *sqlStore) SaveAPIKey(apiKey *models.APIKey) error {
 
 	if errors.Is(err, sql.ErrNoRows) {
 		// No existing record, insert new API key
+		// Serialize the api_key as {"sha256": "<hash>"} for the api_key_hashes TEXT column
+		apiKeyHashesJSON, jsonErr := json.Marshal(map[string]string{"sha256": apiKey.APIKey})
+		if jsonErr != nil {
+			tx.Rollback()
+			return fmt.Errorf("failed to serialize api_key_hashes: %w", jsonErr)
+		}
+
 		insertQuery := `
 			INSERT INTO api_keys (
-				id, gateway_id, name, display_name, api_key, masked_api_key, apiId, operations, status,
-				created_at, created_by, updated_at, expires_at, expires_in_unit, expires_in_duration,
-				source, external_ref_id
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+				id, gateway_id, name, api_key_hashes, masked_api_key, apiId, status,
+				created_at, created_by, updated_at, expires_at, source, external_ref_id
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		`
 
 		_, err := tx.ExecQ(insertQuery,
 			apiKey.ID,
 			s.gatewayId,
 			apiKey.Name,
-			apiKey.DisplayName,
-			apiKey.APIKey,
+			string(apiKeyHashesJSON),
 			apiKey.MaskedAPIKey,
 			apiKey.APIId,
-			apiKey.Operations,
 			apiKey.Status,
 			apiKey.CreatedAt,
 			apiKey.CreatedBy,
 			apiKey.UpdatedAt,
 			apiKey.ExpiresAt,
-			apiKey.Unit,
-			apiKey.Duration,
 			apiKey.Source,
 			apiKey.ExternalRefId,
 		)
@@ -1120,24 +1131,23 @@ func (s *sqlStore) SaveAPIKey(apiKey *models.APIKey) error {
 // GetAPIKeyByID retrieves an API key by its ID
 func (s *sqlStore) GetAPIKeyByID(id string) (*models.APIKey, error) {
 	query := `
-		SELECT id, name, display_name, api_key, masked_api_key, apiId, operations, status,
+		SELECT id, name, api_key_hashes, masked_api_key, apiId, status,
 		       created_at, created_by, updated_at, expires_at, source, external_ref_id
 		FROM api_keys
 		WHERE id = ? AND gateway_id = ?
 	`
 
 	var apiKey models.APIKey
+	var apiKeyHashesJSON string
 	var expiresAt sql.NullTime
 	var externalRefId sql.NullString
 
 	err := s.queryRow(query, id, s.gatewayId).Scan(
 		&apiKey.ID,
 		&apiKey.Name,
-		&apiKey.DisplayName,
-		&apiKey.APIKey,
+		&apiKeyHashesJSON,
 		&apiKey.MaskedAPIKey,
 		&apiKey.APIId,
-		&apiKey.Operations,
 		&apiKey.Status,
 		&apiKey.CreatedAt,
 		&apiKey.CreatedBy,
@@ -1152,6 +1162,11 @@ func (s *sqlStore) GetAPIKeyByID(id string) (*models.APIKey, error) {
 			return nil, fmt.Errorf("%w: key not found", ErrNotFound)
 		}
 		return nil, fmt.Errorf("failed to query API key: %w", err)
+	}
+
+	// Deserialize api_key_hashes JSON and extract sha256 hash into APIKey field
+	if sha256Hash, err := extractSHA256FromHashesJSON(apiKeyHashesJSON); err == nil {
+		apiKey.APIKey = sha256Hash
 	}
 
 	// Handle nullable fields
@@ -1165,27 +1180,28 @@ func (s *sqlStore) GetAPIKeyByID(id string) (*models.APIKey, error) {
 	return &apiKey, nil
 }
 
-// GetAPIKeyByKey retrieves an API key by its key value
+// GetAPIKeyByKey retrieves an API key by its sha256 hash value
 func (s *sqlStore) GetAPIKeyByKey(key string) (*models.APIKey, error) {
-	query := `
-		SELECT id, name, display_name, api_key, masked_api_key, apiId, operations, status,
+	// Use backend-specific JSON extraction to find the key by its sha256 hash
+	hashExpr := s.jsonExtractText("api_key_hashes", "sha256")
+	query := fmt.Sprintf(`
+		SELECT id, name, api_key_hashes, masked_api_key, apiId, status,
 		       created_at, created_by, updated_at, expires_at, source, external_ref_id
 		FROM api_keys
-		WHERE api_key = ? AND gateway_id = ?
-	`
+		WHERE %s = ? AND gateway_id = ?
+	`, hashExpr)
 
 	var apiKey models.APIKey
+	var apiKeyHashesJSON string
 	var expiresAt sql.NullTime
 	var externalRefId sql.NullString
 
 	err := s.queryRow(query, key, s.gatewayId).Scan(
 		&apiKey.ID,
 		&apiKey.Name,
-		&apiKey.DisplayName,
-		&apiKey.APIKey,
+		&apiKeyHashesJSON,
 		&apiKey.MaskedAPIKey,
 		&apiKey.APIId,
-		&apiKey.Operations,
 		&apiKey.Status,
 		&apiKey.CreatedAt,
 		&apiKey.CreatedBy,
@@ -1200,6 +1216,11 @@ func (s *sqlStore) GetAPIKeyByKey(key string) (*models.APIKey, error) {
 			return nil, fmt.Errorf("%w: key not found", ErrNotFound)
 		}
 		return nil, fmt.Errorf("failed to query API key: %w", err)
+	}
+
+	// Deserialize api_key_hashes JSON and extract sha256 hash into APIKey field
+	if sha256Hash, err := extractSHA256FromHashesJSON(apiKeyHashesJSON); err == nil {
+		apiKey.APIKey = sha256Hash
 	}
 
 	// Handle nullable fields
@@ -1216,7 +1237,7 @@ func (s *sqlStore) GetAPIKeyByKey(key string) (*models.APIKey, error) {
 // GetAPIKeysByAPI retrieves all API keys for a specific API
 func (s *sqlStore) GetAPIKeysByAPI(apiId string) ([]*models.APIKey, error) {
 	query := `
-		SELECT id, name, display_name, api_key, masked_api_key, apiId, operations, status,
+		SELECT id, name, api_key_hashes, masked_api_key, apiId, status,
 		       created_at, created_by, updated_at, expires_at, source, external_ref_id
 		FROM api_keys
 		WHERE apiId = ? AND gateway_id = ?
@@ -1233,17 +1254,16 @@ func (s *sqlStore) GetAPIKeysByAPI(apiId string) ([]*models.APIKey, error) {
 
 	for rows.Next() {
 		var apiKey models.APIKey
+		var apiKeyHashesJSON string
 		var expiresAt sql.NullTime
 		var externalRefId sql.NullString
 
 		err := rows.Scan(
 			&apiKey.ID,
 			&apiKey.Name,
-			&apiKey.DisplayName,
-			&apiKey.APIKey,
+			&apiKeyHashesJSON,
 			&apiKey.MaskedAPIKey,
 			&apiKey.APIId,
-			&apiKey.Operations,
 			&apiKey.Status,
 			&apiKey.CreatedAt,
 			&apiKey.CreatedBy,
@@ -1255,6 +1275,10 @@ func (s *sqlStore) GetAPIKeysByAPI(apiId string) ([]*models.APIKey, error) {
 
 		if err != nil {
 			return nil, fmt.Errorf("failed to scan API key row: %w", err)
+		}
+
+		if sha256Hash, err := extractSHA256FromHashesJSON(apiKeyHashesJSON); err == nil {
+			apiKey.APIKey = sha256Hash
 		}
 
 		// Handle nullable fields
@@ -1278,7 +1302,7 @@ func (s *sqlStore) GetAPIKeysByAPI(apiId string) ([]*models.APIKey, error) {
 // GetAPIKeysByAPIAndName retrieves an API key by its apiId and name
 func (s *sqlStore) GetAPIKeysByAPIAndName(apiId, name string) (*models.APIKey, error) {
 	query := `
-		SELECT id, name, display_name, api_key, masked_api_key, apiId, operations, status,
+		SELECT id, name, api_key_hashes, masked_api_key, apiId, status,
 		       created_at, created_by, updated_at, expires_at, source, external_ref_id
 		FROM api_keys
 		WHERE apiId = ? AND name = ? AND gateway_id = ?
@@ -1286,17 +1310,16 @@ func (s *sqlStore) GetAPIKeysByAPIAndName(apiId, name string) (*models.APIKey, e
 	`
 
 	var apiKey models.APIKey
+	var apiKeyHashesJSON string
 	var expiresAt sql.NullTime
 	var externalRefId sql.NullString
 
 	err := s.queryRow(query, apiId, name, s.gatewayId).Scan(
 		&apiKey.ID,
 		&apiKey.Name,
-		&apiKey.DisplayName,
-		&apiKey.APIKey,
+		&apiKeyHashesJSON,
 		&apiKey.MaskedAPIKey,
 		&apiKey.APIId,
-		&apiKey.Operations,
 		&apiKey.Status,
 		&apiKey.CreatedAt,
 		&apiKey.CreatedBy,
@@ -1311,6 +1334,10 @@ func (s *sqlStore) GetAPIKeysByAPIAndName(apiId, name string) (*models.APIKey, e
 			return nil, ErrNotFound
 		}
 		return nil, fmt.Errorf("failed to query API key by name: %w", err)
+	}
+
+	if sha256Hash, err := extractSHA256FromHashesJSON(apiKeyHashesJSON); err == nil {
+		apiKey.APIKey = sha256Hash
 	}
 
 	// Handle nullable fields
@@ -1341,24 +1368,27 @@ func (s *sqlStore) UpdateAPIKey(apiKey *models.APIKey) error {
 		}
 	}()
 
+	// Serialize the api_key as {"sha256": "<hash>"} for the api_key_hashes column
+	apiKeyHashesJSON, jsonErr := json.Marshal(map[string]string{"sha256": apiKey.APIKey})
+	if jsonErr != nil {
+		tx.Rollback()
+		return fmt.Errorf("failed to serialize api_key_hashes: %w", jsonErr)
+	}
+
 	updateQuery := `
 			UPDATE api_keys
-			SET api_key = ?, masked_api_key = ?, display_name = ?, operations = ?, status = ?, created_by = ?, updated_at = ?, expires_at = ?, expires_in_unit = ?, expires_in_duration = ?,
+			SET api_key_hashes = ?, masked_api_key = ?, status = ?, created_by = ?, updated_at = ?, expires_at = ?,
 			    source = ?, external_ref_id = ?
 			WHERE apiId = ? AND name = ? AND gateway_id = ?
 		`
 
 	_, err = tx.ExecQ(updateQuery,
-		apiKey.APIKey,
+		string(apiKeyHashesJSON),
 		apiKey.MaskedAPIKey,
-		apiKey.DisplayName,
-		apiKey.Operations,
 		apiKey.Status,
 		apiKey.CreatedBy,
 		apiKey.UpdatedAt,
 		apiKey.ExpiresAt,
-		apiKey.Unit,
-		apiKey.Duration,
 		apiKey.Source,
 		apiKey.ExternalRefId,
 		apiKey.APIId,
@@ -1388,9 +1418,10 @@ func (s *sqlStore) UpdateAPIKey(apiKey *models.APIKey) error {
 	return nil
 }
 
-// DeleteAPIKey removes an API key by its key value
+// DeleteAPIKey removes an API key by its sha256 hash value
 func (s *sqlStore) DeleteAPIKey(key string) error {
-	query := `DELETE FROM api_keys WHERE api_key = ? AND gateway_id = ?`
+	hashExpr := s.jsonExtractText("api_key_hashes", "sha256")
+	query := fmt.Sprintf(`DELETE FROM api_keys WHERE %s = ? AND gateway_id = ?`, hashExpr)
 
 	result, err := s.exec(query, key, s.gatewayId)
 	if err != nil {
@@ -1535,7 +1566,7 @@ func (s *sqlStore) updateDeploymentConfigsTx(tx *sqlStoreTx, cfg *models.StoredC
 // GetAllAPIKeys retrieves all active API keys from the database.
 func (s *sqlStore) GetAllAPIKeys() ([]*models.APIKey, error) {
 	query := `
-		SELECT id, name, display_name, api_key, masked_api_key, apiId, operations, status,
+		SELECT id, name, api_key_hashes, masked_api_key, apiId, status,
 		       created_at, created_by, updated_at, expires_at, source, external_ref_id
 		FROM api_keys
 		WHERE status = 'active' AND gateway_id = ?
@@ -1552,17 +1583,16 @@ func (s *sqlStore) GetAllAPIKeys() ([]*models.APIKey, error) {
 
 	for rows.Next() {
 		var apiKey models.APIKey
+		var apiKeyHashesJSON string
 		var expiresAt sql.NullTime
 		var externalRefId sql.NullString
 
 		err := rows.Scan(
 			&apiKey.ID,
 			&apiKey.Name,
-			&apiKey.DisplayName,
-			&apiKey.APIKey,
+			&apiKeyHashesJSON,
 			&apiKey.MaskedAPIKey,
 			&apiKey.APIId,
-			&apiKey.Operations,
 			&apiKey.Status,
 			&apiKey.CreatedAt,
 			&apiKey.CreatedBy,
@@ -1574,6 +1604,10 @@ func (s *sqlStore) GetAllAPIKeys() ([]*models.APIKey, error) {
 
 		if err != nil {
 			return nil, fmt.Errorf("failed to scan API key row: %w", err)
+		}
+
+		if sha256Hash, err := extractSHA256FromHashesJSON(apiKeyHashesJSON); err == nil {
+			apiKey.APIKey = sha256Hash
 		}
 
 		// Handle nullable fields
@@ -1609,4 +1643,18 @@ func (s *sqlStore) CountActiveAPIKeysByUserAndAPI(apiId, userID string) (int, er
 	}
 
 	return count, nil
+}
+
+// extractSHA256FromHashesJSON deserializes a JSON string of the form {"sha256": "hash_value"}
+// and returns the sha256 hash value. Used when reading api_key_hashes from the database.
+func extractSHA256FromHashesJSON(hashesJSON string) (string, error) {
+	var hashes map[string]string
+	if err := json.Unmarshal([]byte(hashesJSON), &hashes); err != nil {
+		return "", fmt.Errorf("failed to deserialize api_key_hashes: %w", err)
+	}
+	hash, ok := hashes["sha256"]
+	if !ok || hash == "" {
+		return "", fmt.Errorf("sha256 key not found in api_key_hashes")
+	}
+	return hash, nil
 }

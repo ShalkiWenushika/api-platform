@@ -80,6 +80,7 @@ func StartPlatformAPIServer(cfg *config.Server, slogger *slog.Logger) (*Server, 
 	orgRepo := repository.NewOrganizationRepo(db)
 	projectRepo := repository.NewProjectRepo(db)
 	apiRepo := repository.NewAPIRepo(db)
+	apiKeyRepo := repository.NewAPIKeyRepo(db)
 	gatewayRepo := repository.NewGatewayRepo(db)
 	artifactRepo := repository.NewArtifactRepo(db)
 	devPortalRepo := repository.NewDevPortalRepository(db)
@@ -163,9 +164,14 @@ func StartPlatformAPIServer(cfg *config.Server, slogger *slog.Logger) (*Server, 
 		gatewayEventsService, devPortalService, apiUtil, slogger)
 	gatewayService := service.NewGatewayService(gatewayRepo, orgRepo, apiRepo, slogger)
 	internalGatewayService := service.NewGatewayInternalAPIService(apiRepo, llmProviderRepo, llmProxyRepo, deploymentRepo, gatewayRepo, orgRepo, projectRepo, cfg, slogger)
-	apiKeyService := service.NewAPIKeyService(apiRepo, gatewayEventsService, slogger)
+	// Default to SHA-256 if not configured
+	hashAlgorithms := cfg.APIKey.HashAlgorithms
+	if len(hashAlgorithms) == 0 {
+		hashAlgorithms = []string{"sha256"}
+	}
+	apiKeyService := service.NewAPIKeyService(apiRepo, apiKeyRepo, gatewayEventsService, hashAlgorithms, slogger)
 	gitService := service.NewGitService()
-	deploymentService := service.NewDeploymentService(apiRepo, artifactRepo, deploymentRepo, gatewayRepo, orgRepo, gatewayEventsService, apiUtil, cfg, slogger)
+	deploymentService := service.NewDeploymentService(apiRepo, apiKeyRepo, artifactRepo, deploymentRepo, gatewayRepo, orgRepo, gatewayEventsService, apiUtil, cfg, slogger)
 	llmTemplateService := service.NewLLMProviderTemplateService(llmTemplateRepo)
 	llmProviderService := service.NewLLMProviderService(llmProviderRepo, llmTemplateRepo, orgRepo, llmTemplateSeeder)
 	llmProxyService := service.NewLLMProxyService(llmProxyRepo, llmProviderRepo, projectRepo)
@@ -179,8 +185,8 @@ func StartPlatformAPIServer(cfg *config.Server, slogger *slog.Logger) (*Server, 
 		cfg,
 		slogger,
 	)
-	llmProviderAPIKeyService := service.NewLLMProviderAPIKeyService(llmProviderRepo, gatewayRepo, gatewayEventsService, slogger)
-	llmProxyAPIKeyService := service.NewLLMProxyAPIKeyService(llmProxyRepo, gatewayRepo, gatewayEventsService, slogger)
+	llmProviderAPIKeyService := service.NewLLMProviderAPIKeyService(llmProviderRepo, apiRepo, gatewayRepo, gatewayEventsService, slogger)
+	llmProxyAPIKeyService := service.NewLLMProxyAPIKeyService(llmProxyRepo, apiRepo, gatewayRepo, gatewayEventsService, slogger)
 	llmProxyDeploymentService := service.NewLLMProxyDeploymentService(
 		llmProxyRepo,
 		deploymentRepo,

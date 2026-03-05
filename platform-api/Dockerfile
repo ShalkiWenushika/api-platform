@@ -94,9 +94,9 @@ COPY src/resources/default-llm-provider-templates ./default-llm-provider-templat
 ARG PORT
 EXPOSE ${PORT}
 
-ENV DRIVER=sqlite3
+ENV DRIVER=postgres
 ENV LOG_LEVEL=INFO
-ENV DB_SCHEMA_PATH=./schema.sql
+ENV DB_SCHEMA_PATH=./schema.postgres.sql
 ENV LLM_TEMPLATE_DEFINITIONS_PATH=./default-llm-provider-templates
 # For SQLite: configured via DATABASE_DB_PATH to avoid clashing with OS PATH
 ENV DATABASE_DB_PATH=/app/data/api_platform.db

@@ -23,6 +23,7 @@ import (
 	"crypto/sha256"
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -579,6 +580,8 @@ func (c *Client) handleMessage(messageType int, message []byte) {
 		c.handleAPIKeyUpdatedEvent(event)
 	case "apikey.revoked":
 		c.handleAPIKeyRevokedEvent(event)
+	case "apikeys.sync":
+		c.handleAPIKeysBatchSyncEvent(event)
 	default:
 		c.logger.Info("Received unknown event type (will be processed when handlers are implemented)",
 			slog.String("type", eventType),
@@ -1506,35 +1509,32 @@ func (c *Client) handleAPIKeyCreatedEvent(event map[string]interface{}) {
 		)
 		return
 	}
-	if keyCreatedEvent.Payload.ApiKey == "" {
-		baseLogger.Error("API key created event missing required api_key",
+	if len(keyCreatedEvent.Payload.ApiKeyHashes) == 0 {
+		baseLogger.Error("API key created event missing required api_key_hashes",
 			slog.Any("correlation_id", event["correlationId"]),
 		)
 		return
 	}
-	// Validate Name - required field for external API key events
-	// Since no response is sent back through WebSocket, the caller must know the identifier
-	if keyCreatedEvent.Payload.Name != "" {
-		// Validate the name format
-		if err := utils.ValidateAPIKeyName(keyCreatedEvent.Payload.Name); err != nil {
-			baseLogger.Error("API key created event has invalid name",
-				slog.Any("correlation_id", event["correlationId"]),
-				slog.Any("error", err),
-			)
-			return
-		}
+	sha256Hash, hashExists := keyCreatedEvent.Payload.ApiKeyHashes["sha256"]
+	if !hashExists || sha256Hash == "" {
+		baseLogger.Error("API key created event missing sha256 hash in api_key_hashes",
+			slog.Any("correlation_id", event["correlationId"]),
+		)
+		return
 	}
-
-	// Validate DisplayName - optional field (pointer may be nil)
-	if keyCreatedEvent.Payload.DisplayName != nil && strings.TrimSpace(*keyCreatedEvent.Payload.DisplayName) != "" {
-		// Validate the display name format
-		if err := utils.ValidateDisplayName(*keyCreatedEvent.Payload.DisplayName); err != nil {
-			baseLogger.Error("API key created event has invalid display_name",
-				slog.Any("correlation_id", event["correlationId"]),
-				slog.Any("error", err),
-			)
-			return
-		}
+	// Name is required for event-driven keys so platform-api can identify them
+	if keyCreatedEvent.Payload.Name == "" {
+		baseLogger.Error("API key created event missing required name",
+			slog.Any("correlation_id", event["correlationId"]),
+		)
+		return
+	}
+	if err := utils.ValidateAPIKeyName(keyCreatedEvent.Payload.Name); err != nil {
+		baseLogger.Error("API key created event has invalid name",
+			slog.Any("correlation_id", event["correlationId"]),
+			slog.Any("error", err),
+		)
+		return
 	}
 
 	logger := baseLogger.With(
@@ -1545,18 +1545,33 @@ func (c *Client) handleAPIKeyCreatedEvent(event map[string]interface{}) {
 
 	payload := keyCreatedEvent.Payload
 
-	var expiresAt *time.Time
-	var duration *int
+	// Get API configuration to resolve the internal API ID and metadata for xDS
+	apiConfig, err := c.store.GetByHandle(payload.ApiId)
+	if err != nil {
+		logger.Error("API configuration not found for API key created event",
+			slog.String("api_id", payload.ApiId),
+			slog.Any("error", err))
+		return
+	}
+	apiConfigData, err := apiConfig.Configuration.Spec.AsAPIConfigData()
+	if err != nil {
+		logger.Error("Failed to extract API config data for API key created event",
+			slog.Any("error", err))
+		return
+	}
+
+	// Use masked key from event if provided, otherwise mask the hash
+	maskedKey := payload.MaskedApiKey
+	if maskedKey == "" {
+		maskedKey = c.apiKeyService.MaskAPIKey(sha256Hash)
+	}
+
 	now := time.Now()
 
-	apiKeyCreationRequest := api.APIKeyCreationRequest{
-		ApiKey:        &payload.ApiKey,
-		DisplayName:   payload.DisplayName,
-		Name:          &payload.Name,
-		ExternalRefId: payload.ExternalRefId,
-	}
+	// Resolve expiration
+	var expiresAt *time.Time
+
 	if payload.ExpiresAt != nil {
-		// payload.ExpiresAt is likely a *string (RFC3339). Attempt to parse it to time.Time
 		parsedExpiresAt, err := time.Parse(time.RFC3339, *payload.ExpiresAt)
 		if err != nil {
 			logger.Error("Invalid expires_at format for API key, expected RFC3339",
@@ -1571,13 +1586,12 @@ func (c *Client) handleAPIKeyCreatedEvent(event map[string]interface{}) {
 				slog.String("now", now.Format(time.RFC3339)))
 			return
 		}
-		// If expires_at is explicitly provided, use it
 		expiresAt = &parsedExpiresAt
-		apiKeyCreationRequest.ExpiresAt = expiresAt
 	} else if payload.ExpiresIn != nil {
-		duration = &payload.ExpiresIn.Duration
-		timeDuration := time.Duration(*duration)
-		switch payload.ExpiresIn.Unit {
+		dur := payload.ExpiresIn.Duration
+		unitStr := payload.ExpiresIn.Unit
+		timeDuration := time.Duration(dur)
+		switch unitStr {
 		case string(api.APIKeyCreationRequestExpiresInUnitSeconds):
 			timeDuration *= time.Second
 		case string(api.APIKeyCreationRequestExpiresInUnitMinutes):
@@ -1589,30 +1603,82 @@ func (c *Client) handleAPIKeyCreatedEvent(event map[string]interface{}) {
 		case string(api.APIKeyCreationRequestExpiresInUnitWeeks):
 			timeDuration *= 7 * 24 * time.Hour
 		case string(api.APIKeyCreationRequestExpiresInUnitMonths):
-			timeDuration *= 30 * 24 * time.Hour // Approximate month as 30 days
+			timeDuration *= 30 * 24 * time.Hour
 		default:
-			logger.Error("Unsupported expiration unit", slog.Any("expires_in.unit", payload.ExpiresIn.Unit))
+			logger.Error("Unsupported expiration unit", slog.Any("expires_in.unit", unitStr))
 			return
 		}
 		expiry := now.Add(timeDuration)
 		expiresAt = &expiry
-		apiKeyCreationRequest.ExpiresAt = expiresAt
 	}
 
-	result, err := c.apiKeyService.CreateExternalAPIKeyFromEvent(
-		payload.ApiId,
-		keyCreatedEvent.UserId,
-		&apiKeyCreationRequest,
-		keyCreatedEvent.CorrelationID,
-		logger,
-	)
-	if err != nil {
-		logger.Error("Failed to create external API key", slog.Any("error", err))
+	// Generate a stable ID from apiId + name (deterministic for idempotency)
+	idSource := fmt.Sprintf("%s:%s:%d", payload.ApiId, payload.Name, now.UnixNano())
+	idHash := sha256.Sum256([]byte(idSource))
+	id := strings.TrimRight(
+		strings.ReplaceAll(
+			strings.ReplaceAll(
+				fmt.Sprintf("%x", idHash[:11]),
+				"+", "-"),
+			"/", "_"),
+		"=")
+
+	// Resolve external ref id
+	var externalRefId *string
+	if payload.ExternalRefId != nil && *payload.ExternalRefId != "" {
+		externalRefId = payload.ExternalRefId
+	}
+
+	// Build the APIKey model directly using the pre-hashed key - no hashing needed
+	apiKey := &models.APIKey{
+		ID:            id,
+		Name:          payload.Name,
+		APIKey:        sha256Hash, // Pre-hashed value from platform-api
+		MaskedAPIKey:  maskedKey,
+		APIId:         apiConfig.ID,
+		Status:        models.APIKeyStatusActive,
+		CreatedAt:     now,
+		CreatedBy:     keyCreatedEvent.UserId,
+		UpdatedAt:     now,
+		ExpiresAt:     expiresAt,
+		Source:        "external",
+		ExternalRefId: externalRefId,
+	}
+
+	// Save to database (if persistent mode)
+	if c.db != nil {
+		if err := c.db.SaveAPIKey(apiKey); err != nil {
+			if errors.Is(err, storage.ErrConflict) {
+				logger.Warn("API key from created event already exists in database, skipping",
+					slog.String("key_name", payload.Name))
+				return
+			}
+			logger.Error("Failed to save API key from created event to database", slog.Any("error", err))
+			return
+		}
+	}
+
+	// Store in ConfigStore (in-memory)
+	if err := c.store.StoreAPIKey(apiKey); err != nil {
+		logger.Error("Failed to store API key from created event in memory", slog.Any("error", err))
+		if c.db != nil {
+			if delErr := c.db.RemoveAPIKeyAPIAndName(apiKey.APIId, apiKey.Name); delErr != nil {
+				logger.Error("Failed to rollback API key from database", slog.Any("error", delErr))
+			}
+		}
 		return
 	}
 
+	// Update policy engine (xDS)
+	if c.apiKeyXDSManager != nil {
+		if err := c.apiKeyXDSManager.StoreAPIKey(apiConfig.ID, apiConfigData.DisplayName, apiConfigData.Version, apiKey, keyCreatedEvent.CorrelationID); err != nil {
+			logger.Error("Failed to send API key to policy engine", slog.Any("error", err))
+			return
+		}
+	}
+
 	logger.Info("Successfully processed API key created event",
-		slog.String("api_key_name", result.Response.ApiKey.Name),
+		slog.String("api_key_name", apiKey.Name),
 	)
 }
 
@@ -1726,30 +1792,21 @@ func (c *Client) handleAPIKeyUpdatedEvent(event map[string]interface{}) {
 		)
 		return
 	}
-	if payload.ApiKey == "" {
-		baseLogger.Error("API key updated event missing required api_key",
+	if len(payload.ApiKeyHashes) == 0 {
+		baseLogger.Error("API key updated event missing required api_key_hashes",
 			slog.Any("correlation_id", event["correlationId"]),
 			slog.String("api_id", payload.ApiId),
 			slog.String("key_name", payload.KeyName),
 		)
 		return
 	}
-	if payload.DisplayName == "" {
-		baseLogger.Error("API key updated event missing required display_name",
+	// Extract the SHA-256 hash (platform-api sends pre-hashed values)
+	sha256Hash, exists := payload.ApiKeyHashes["sha256"]
+	if !exists || sha256Hash == "" {
+		baseLogger.Error("API key updated event missing sha256 hash in api_key_hashes",
 			slog.Any("correlation_id", event["correlationId"]),
 			slog.String("api_id", payload.ApiId),
 			slog.String("key_name", payload.KeyName),
-		)
-		return
-	}
-
-	// Validate the display name format
-	if err := utils.ValidateDisplayName(payload.DisplayName); err != nil {
-		baseLogger.Error("API key updated event has invalid display_name",
-			slog.Any("correlation_id", event["correlationId"]),
-			slog.String("api_id", payload.ApiId),
-			slog.String("key_name", payload.KeyName),
-			slog.Any("error", err),
 		)
 		return
 	}
@@ -1761,18 +1818,52 @@ func (c *Client) handleAPIKeyUpdatedEvent(event map[string]interface{}) {
 		slog.String("key_name", payload.KeyName),
 	)
 
-	var expiresAt *time.Time
-	var duration *int
 	now := time.Now()
 
-	apiKeyCreationRequest := api.APIKeyCreationRequest{
-		ApiKey:        &payload.ApiKey,
-		DisplayName:   &payload.DisplayName,
-		ExternalRefId: &payload.ExternalRefId,
-		Name:          &payload.KeyName,
+	// Get API configuration to resolve the internal API ID and metadata for xDS
+	apiConfig, err := c.store.GetByHandle(payload.ApiId)
+	if err != nil {
+		logger.Error("API configuration not found for API key updated event",
+			slog.String("api_id", payload.ApiId),
+			slog.Any("error", err))
+		return
 	}
+	apiConfigData, err := apiConfig.Configuration.Spec.AsAPIConfigData()
+	if err != nil {
+		logger.Error("Failed to extract API config data for API key updated event",
+			slog.Any("error", err))
+		return
+	}
+
+	// Look up existing API key to preserve its ID and creation metadata
+	var existingKey *models.APIKey
+	if c.db != nil {
+		existingKey, err = c.db.GetAPIKeysByAPIAndName(apiConfig.ID, payload.KeyName)
+		if err != nil {
+			logger.Error("Failed to retrieve existing API key for update",
+				slog.Any("error", err))
+			return
+		}
+	} else {
+		existingKey, err = c.store.GetAPIKeyByName(apiConfig.ID, payload.KeyName)
+		if err != nil {
+			logger.Error("Failed to retrieve existing API key for update from memory store",
+				slog.Any("error", err))
+			return
+		}
+	}
+
+	if existingKey == nil {
+		logger.Error("API key not found for update event",
+			slog.String("api_id", payload.ApiId),
+			slog.String("key_name", payload.KeyName))
+		return
+	}
+
+	// Resolve expiration
+	var expiresAt *time.Time
+
 	if payload.ExpiresAt != nil {
-		// payload.ExpiresAt is likely a *string (RFC3339). Attempt to parse it to time.Time
 		parsedExpiresAt, err := time.Parse(time.RFC3339, *payload.ExpiresAt)
 		if err != nil {
 			logger.Error("Invalid expires_at format for API key, expected RFC3339",
@@ -1787,13 +1878,12 @@ func (c *Client) handleAPIKeyUpdatedEvent(event map[string]interface{}) {
 				slog.String("now", now.Format(time.RFC3339)))
 			return
 		}
-		// If expires_at is explicitly provided, use it
 		expiresAt = &parsedExpiresAt
-		apiKeyCreationRequest.ExpiresAt = expiresAt
 	} else if payload.ExpiresIn != nil {
-		duration = &payload.ExpiresIn.Duration
-		timeDuration := time.Duration(*duration)
-		switch payload.ExpiresIn.Unit {
+		dur := payload.ExpiresIn.Duration
+		unitStr := payload.ExpiresIn.Unit
+		timeDuration := time.Duration(dur)
+		switch unitStr {
 		case string(api.APIKeyCreationRequestExpiresInUnitSeconds):
 			timeDuration *= time.Second
 		case string(api.APIKeyCreationRequestExpiresInUnitMinutes):
@@ -1805,29 +1895,321 @@ func (c *Client) handleAPIKeyUpdatedEvent(event map[string]interface{}) {
 		case string(api.APIKeyCreationRequestExpiresInUnitWeeks):
 			timeDuration *= 7 * 24 * time.Hour
 		case string(api.APIKeyCreationRequestExpiresInUnitMonths):
-			timeDuration *= 30 * 24 * time.Hour // Approximate month as 30 days
+			timeDuration *= 30 * 24 * time.Hour
 		default:
-			logger.Error("Unsupported expiration unit", slog.Any("expires_in.unit", payload.ExpiresIn.Unit))
+			logger.Error("Unsupported expiration unit", slog.Any("expires_in.unit", unitStr))
 			return
 		}
 		expiry := now.Add(timeDuration)
 		expiresAt = &expiry
-		apiKeyCreationRequest.ExpiresAt = expiresAt
 	}
 
-	err = c.apiKeyService.UpdateExternalAPIKeyFromEvent(
-		payload.ApiId,
-		payload.KeyName,
-		&apiKeyCreationRequest,
-		evt.UserId,
-		evt.CorrelationID,
-		logger,
-	)
-	if err != nil {
-		logger.Error("Failed to update external API key", slog.Any("error", err))
+	// Use masked key from event if provided, otherwise mask the hash
+	maskedKey := payload.MaskedApiKey
+	if maskedKey == "" {
+		maskedKey = c.apiKeyService.MaskAPIKey(sha256Hash)
+	}
+
+	// Resolve external ref id
+	var externalRefId *string
+	if payload.ExternalRefId != "" {
+		externalRefId = &payload.ExternalRefId
+	}
+
+	// Build updated APIKey model directly using the pre-hashed key - no hashing needed
+	updatedKey := &models.APIKey{
+		ID:            existingKey.ID,
+		Name:          payload.KeyName,
+		APIKey:        sha256Hash, // Pre-hashed value from platform-api
+		MaskedAPIKey:  maskedKey,
+		APIId:         apiConfig.ID,
+		Status:        existingKey.Status,
+		CreatedAt:     existingKey.CreatedAt,
+		CreatedBy:     existingKey.CreatedBy,
+		UpdatedAt:     now,
+		ExpiresAt:     expiresAt,
+		Source:        existingKey.Source,
+		ExternalRefId: externalRefId,
+	}
+
+	// Save to database (if persistent mode)
+	if c.db != nil {
+		if err := c.db.UpdateAPIKey(updatedKey); err != nil {
+			logger.Error("Failed to update API key from updated event in database", slog.Any("error", err))
+			return
+		}
+	}
+
+	// Store in ConfigStore (in-memory)
+	if err := c.store.StoreAPIKey(updatedKey); err != nil {
+		logger.Error("Failed to store updated API key from updated event in memory", slog.Any("error", err))
 		return
 	}
-	logger.Info("Successfully processed API key updated event")
+
+	// Update policy engine (xDS)
+	if c.apiKeyXDSManager != nil {
+		if err := c.apiKeyXDSManager.StoreAPIKey(apiConfig.ID, apiConfigData.DisplayName, apiConfigData.Version, updatedKey, evt.CorrelationID); err != nil {
+			logger.Error("Failed to send updated API key to policy engine", slog.Any("error", err))
+			return
+		}
+	}
+
+	logger.Info("Successfully processed API key updated event",
+		slog.String("api_key_name", updatedKey.Name),
+	)
+}
+
+// handleAPIKeysBatchSyncEvent handles batch API keys sync events from platform-api.
+// This event is sent when an API is deployed to a new gateway for the first time,
+// containing all existing active API keys that need to be synced to the gateway.
+func (c *Client) handleAPIKeysBatchSyncEvent(event map[string]interface{}) {
+	baseLogger := c.logger
+	if baseLogger == nil {
+		baseLogger = slog.Default()
+	}
+	baseLogger.Info("API Keys Batch Sync Event received",
+		slog.Any("correlation_id", event["correlationId"]),
+		slog.Any("timestamp", event["timestamp"]),
+	)
+
+	eventBytes, err := json.Marshal(event)
+	if err != nil {
+		baseLogger.Error("Failed to marshal API keys batch sync event for parsing",
+			slog.Any("correlation_id", event["correlationId"]),
+			slog.Any("error", err),
+		)
+		return
+	}
+
+	var batchSyncEvent APIKeysBatchSyncEvent
+	if err := json.Unmarshal(eventBytes, &batchSyncEvent); err != nil {
+		baseLogger.Error("Failed to parse API keys batch sync event",
+			slog.Any("correlation_id", event["correlationId"]),
+			slog.Any("error", err),
+		)
+		return
+	}
+
+	// Validate required fields
+	if batchSyncEvent.Payload.ApiId == "" {
+		baseLogger.Error("API keys batch sync event missing required api_id",
+			slog.Any("correlation_id", event["correlationId"]),
+		)
+		return
+	}
+
+	if len(batchSyncEvent.Payload.ApiKeys) == 0 {
+		baseLogger.Info("API keys batch sync event contains no keys to sync",
+			slog.Any("correlation_id", event["correlationId"]),
+			slog.String("api_id", batchSyncEvent.Payload.ApiId),
+		)
+		return
+	}
+
+	logger := baseLogger.With(
+		slog.String("correlation_id", batchSyncEvent.CorrelationID),
+		slog.String("user_id", batchSyncEvent.UserId),
+		slog.String("api_id", batchSyncEvent.Payload.ApiId),
+		slog.Int("total_keys", len(batchSyncEvent.Payload.ApiKeys)),
+	)
+
+	logger.Info("Processing batch API keys sync")
+
+	successCount := 0
+	failureCount := 0
+	now := time.Now()
+
+	// Process each API key in the batch
+	for i, keyData := range batchSyncEvent.Payload.ApiKeys {
+		keyLogger := logger.With(
+			slog.Int("key_index", i),
+			slog.String("key_name", keyData.Name),
+		)
+
+		// Validate required fields for this key
+		if keyData.ApiId == "" {
+			keyLogger.Error("API key in batch missing required api_id")
+			failureCount++
+			continue
+		}
+
+		// For batch sync, we receive pre-hashed keys from platform-API
+		if len(keyData.ApiKeyHashes) == 0 {
+			keyLogger.Error("API key in batch missing required api_key_hashes")
+			failureCount++
+			continue
+		}
+
+		// Validate Name - required field for external API key events
+		if keyData.Name == "" {
+			keyLogger.Error("API key in batch missing required name")
+			failureCount++
+			continue
+		}
+		if err := utils.ValidateAPIKeyName(keyData.Name); err != nil {
+			keyLogger.Error("API key in batch has invalid name", slog.Any("error", err))
+			failureCount++
+			continue
+		}
+
+		// Extract the SHA-256 hash (platform-API sends pre-hashed values)
+		apiKeyHash, exists := keyData.ApiKeyHashes["sha256"]
+		if !exists || apiKeyHash == "" {
+			keyLogger.Error("API key in batch missing sha256 hash")
+			failureCount++
+			continue
+		}
+
+		// Handle expiration
+		var expiresAt *time.Time
+		if keyData.ExpiresAt != nil {
+			parsedExpiresAt, err := time.Parse(time.RFC3339, *keyData.ExpiresAt)
+			if err != nil {
+				keyLogger.Error("Invalid expires_at format for API key, expected RFC3339",
+					slog.Any("expires_at", *keyData.ExpiresAt),
+					slog.Any("error", err),
+				)
+				failureCount++
+				continue
+			}
+			if parsedExpiresAt.Before(now) {
+				keyLogger.Warn("API key in batch has expiration time in the past, skipping",
+					slog.String("expires_at", parsedExpiresAt.Format(time.RFC3339)),
+					slog.String("now", now.Format(time.RFC3339)))
+				failureCount++
+				continue
+			}
+			expiresAt = &parsedExpiresAt
+		} else if keyData.ExpiresIn != nil {
+			duration := keyData.ExpiresIn.Duration
+			timeDuration := time.Duration(duration)
+			switch keyData.ExpiresIn.Unit {
+			case string(api.APIKeyCreationRequestExpiresInUnitSeconds):
+				timeDuration *= time.Second
+			case string(api.APIKeyCreationRequestExpiresInUnitMinutes):
+				timeDuration *= time.Minute
+			case string(api.APIKeyCreationRequestExpiresInUnitHours):
+				timeDuration *= time.Hour
+			case string(api.APIKeyCreationRequestExpiresInUnitDays):
+				timeDuration *= 24 * time.Hour
+			case string(api.APIKeyCreationRequestExpiresInUnitWeeks):
+				timeDuration *= 7 * 24 * time.Hour
+			case string(api.APIKeyCreationRequestExpiresInUnitMonths):
+				timeDuration *= 30 * 24 * time.Hour
+			default:
+				keyLogger.Error("Unsupported expiration unit", slog.Any("expires_in.unit", keyData.ExpiresIn.Unit))
+				failureCount++
+				continue
+			}
+			expiry := now.Add(timeDuration)
+			expiresAt = &expiry
+		}
+
+		// Generate a unique ID for the API key (22 characters, URL-safe)
+		// We use a simple approach: hash the combination of API ID, key name, and timestamp
+		idSource := fmt.Sprintf("%s:%s:%d", keyData.ApiId, keyData.Name, now.UnixNano())
+		idHash := sha256.Sum256([]byte(idSource))
+		// Take first 16 bytes and base64 URL-encode to get 22 chars
+		// Using standard base64 with URL-safe encoding
+		id := strings.TrimRight(
+			strings.ReplaceAll(
+				strings.ReplaceAll(
+					fmt.Sprintf("%x", idHash[:11]), // Use 11 bytes to get ~22 chars in hex
+					"+", "-"),
+				"/", "_"),
+			"=")
+
+		// Create a masked version of the hash for display (show first 8 and last 4 chars)
+		maskedHash := c.apiKeyService.MaskAPIKey(apiKeyHash)
+
+		// Get the API config to extract API name and version for xDS manager
+		apiConfig, err := c.store.GetByHandle(keyData.ApiId)
+		if err != nil {
+			keyLogger.Error("API configuration not found for batch sync key",
+				slog.String("api_id", keyData.ApiId),
+				slog.Any("error", err))
+			failureCount++
+			continue
+		}
+
+		// Extract API name and version from config
+		apiConfigData, err := apiConfig.Configuration.Spec.AsAPIConfigData()
+		if err != nil {
+			keyLogger.Error("Failed to extract API config data for batch sync key",
+				slog.String("api_id", keyData.ApiId),
+				slog.Any("error", err))
+			failureCount++
+			continue
+		}
+		apiName := apiConfigData.DisplayName
+		apiVersion := apiConfigData.Version
+
+		// Create the APIKey model directly with the pre-hashed value
+		// We bypass CreateExternalAPIKeyFromEvent because we already have the hash
+		apiKey := &models.APIKey{
+			ID:            id,
+			Name:          keyData.Name,
+			APIKey:        apiKeyHash, // Store the pre-hashed value directly
+			MaskedAPIKey:  maskedHash,
+			PlainAPIKey:   "",         // Empty - we never have plain text in batch sync
+			APIId:         keyData.ApiId,
+			Status:        models.APIKeyStatusActive,
+			CreatedAt:     now,
+			CreatedBy:     batchSyncEvent.UserId,
+			UpdatedAt:     now,
+			ExpiresAt:     expiresAt,
+			Source:        "external",
+			ExternalRefId: keyData.ExternalRefId,
+		}
+
+		// Store the API key in the database (if persistent mode)
+		if c.db != nil {
+			if err := c.db.SaveAPIKey(apiKey); err != nil {
+				if errors.Is(err, storage.ErrConflict) {
+					keyLogger.Warn("API key from batch already exists in database, skipping",
+						slog.String("key_name", keyData.Name))
+					// Consider this a success since the key is already there
+					successCount++
+					continue
+				}
+				keyLogger.Error("Failed to save API key from batch to database", slog.Any("error", err))
+				failureCount++
+				continue
+			}
+		}
+
+		// Store in ConfigStore (in-memory)
+		if err := c.store.StoreAPIKey(apiKey); err != nil {
+			keyLogger.Error("Failed to store API key from batch in memory", slog.Any("error", err))
+			failureCount++
+			continue
+		}
+
+		// Update policy engine (xDS) with the new key
+		if c.apiKeyXDSManager != nil {
+			if err := c.apiKeyXDSManager.StoreAPIKey(
+				keyData.ApiId,
+				apiName,
+				apiVersion,
+				apiKey,
+				batchSyncEvent.CorrelationID,
+			); err != nil {
+				keyLogger.Error("Failed to store API key from batch in policy engine", slog.Any("error", err))
+				failureCount++
+				continue
+			}
+		}
+
+		keyLogger.Info("Successfully processed API key from batch",
+			slog.String("api_key_name", apiKey.Name),
+		)
+		successCount++
+	}
+
+	logger.Info("Completed processing batch API keys sync",
+		slog.Int("success_count", successCount),
+		slog.Int("failure_count", failureCount),
+	)
 }
 
 // calculateNextRetryDelay calculates the next retry delay with exponential backoff and jitter

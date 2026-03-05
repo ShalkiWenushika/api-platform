@@ -190,10 +190,9 @@ type APIKeyStateResource struct {
 type APIKeyData struct {
 	ID         string     `json:"id"`
 	Name       string     `json:"name"`
-	APIKey     string     `json:"apiKey"`
-	APIId      string     `json:"apiId"`
-	Operations string     `json:"operations"`
-	Status     string     `json:"status"`
+	APIKey string     `json:"apiKey"`
+	APIId  string     `json:"apiId"`
+	Status string     `json:"status"`
 	CreatedAt  time.Time  `json:"createdAt"`
 	CreatedBy  string     `json:"createdBy"`
 	UpdatedAt  time.Time  `json:"updatedAt"`
@@ -211,10 +210,9 @@ func (t *APIKeyTranslator) TranslateAPIKeys(apiKeys []*models.APIKey) (map[strin
 		data := APIKeyData{
 			ID:         apiKey.ID,
 			Name:       apiKey.Name,
-			APIKey:     apiKey.APIKey,
-			APIId:      apiKey.APIId,
-			Operations: apiKey.Operations,
-			Status:     string(apiKey.Status),
+			APIKey: apiKey.APIKey,
+			APIId:  apiKey.APIId,
+			Status: string(apiKey.Status),
 			CreatedAt:  apiKey.CreatedAt,
 			CreatedBy:  apiKey.CreatedBy,
 			UpdatedAt:  apiKey.UpdatedAt,

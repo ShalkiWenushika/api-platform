@@ -33,6 +33,7 @@ import (
 // LLMProviderAPIKeyService handles API key management for LLM providers
 type LLMProviderAPIKeyService struct {
 	llmProviderRepo      repository.LLMProviderRepository
+	apiRepo              repository.APIRepository
 	gatewayRepo          repository.GatewayRepository
 	gatewayEventsService *GatewayEventsService
 	slogger              *slog.Logger
@@ -41,12 +42,14 @@ type LLMProviderAPIKeyService struct {
 // NewLLMProviderAPIKeyService creates a new LLM provider API key service instance
 func NewLLMProviderAPIKeyService(
 	llmProviderRepo repository.LLMProviderRepository,
+	apiRepo repository.APIRepository,
 	gatewayRepo repository.GatewayRepository,
 	gatewayEventsService *GatewayEventsService,
 	slogger *slog.Logger,
 ) *LLMProviderAPIKeyService {
 	return &LLMProviderAPIKeyService{
 		llmProviderRepo:      llmProviderRepo,
+		apiRepo:              apiRepo,
 		gatewayRepo:          gatewayRepo,
 		gatewayEventsService: gatewayEventsService,
 		slogger:              slogger,
@@ -96,41 +99,37 @@ func (s *LLMProviderAPIKeyService) CreateLLMProviderAPIKey(
 		}
 	}
 
-	displayName := name
-	if req.DisplayName != nil && *req.DisplayName != "" {
-		displayName = *req.DisplayName
-	}
-
 	var expiresAt *string
 	if req.ExpiresAt != nil {
 		expiresAtStr := req.ExpiresAt.Format(time.RFC3339)
 		expiresAt = &expiresAtStr
 	}
 
-	if displayName == "" {
-		displayName = name
-	}
-
-	gateways, err := s.gatewayRepo.GetByOrganizationID(orgID)
+	// Get gateways where the LLM provider is deployed (using artifact UUID)
+	// The provider UUID is the artifact UUID due to FK constraint
+	gateways, err := s.apiRepo.GetAPIGatewaysWithDetails(provider.UUID, orgID)
 	if err != nil {
 		s.slogger.Error("Failed to get gateways for API key broadcast", "providerId", providerID, "error", err)
-		return nil, fmt.Errorf("failed to get gateways: %w", err)
+		return nil, fmt.Errorf("failed to get gateways for deployed LLM provider: %w", err)
 	}
 
 	if len(gateways) == 0 {
-		s.slogger.Warn("No gateways found for organization", "organizationId", orgID)
+		s.slogger.Warn("No gateways found with LLM provider deployment", "providerId", providerID, "organizationId", orgID)
 		return nil, constants.ErrGatewayUnavailable
 	}
 
-	operations := "[\"*\"]"
+	// Hash the API key using SHA-256
+	apiKeyHashes, err := utils.HashAPIKey(apiKey, []string{"sha256"})
+	if err != nil {
+		s.slogger.Error("Failed to hash LLM provider API key", "providerId", providerID, "error", err)
+		return nil, fmt.Errorf("failed to hash API key: %w", err)
+	}
 
 	event := &model.APIKeyCreatedEvent{
-		ApiId:       providerID,
-		Name:        name,
-		DisplayName: displayName,
-		ApiKey:      apiKey,
-		Operations:  operations,
-		ExpiresAt:   expiresAt,
+		ApiId:        providerID,
+		Name:         name,
+		ApiKeyHashes: apiKeyHashes,
+		ExpiresAt:    expiresAt,
 	}
 
 	successCount := 0

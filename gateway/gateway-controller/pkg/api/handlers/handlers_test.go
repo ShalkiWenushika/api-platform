@@ -437,7 +437,6 @@ func createTestAPIServer() *APIServer {
 				VHosts:      *vhosts,
 			},
 			APIKey: config.APIKeyConfig{
-				Algorithm:    "sha256",
 				MinKeyLength: 32,
 				MaxKeyLength: 128,
 			},
@@ -2433,7 +2432,7 @@ func TestUpdateAPIKeyMissingAPIKey(t *testing.T) {
 	err := json.Unmarshal(w.Body.Bytes(), &response)
 	require.NoError(t, err)
 	assert.Equal(t, "error", response.Status)
-	assert.Equal(t, "API key value is required", response.Message)
+	assert.Equal(t, "apiKeyHashes is required", response.Message)
 }
 
 // TestRevokeAPIKeyNotFound tests revoking a non-existent API key

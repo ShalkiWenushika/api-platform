@@ -43,8 +43,8 @@ services:
       - ./configs/config.toml:/etc/gateway-controller/config.toml:ro
       - ./gateway-controller/certificates:/app/certificates  # Read-write for dynamic certificate management
       - ./gateway-controller/listener-certs:/app/listener-certs:ro  # Read-only for HTTPS listener certificates
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
+    # extra_hosts:
+    #   - "host.docker.internal:host-gateway"
     networks:
       - gateway-network
 

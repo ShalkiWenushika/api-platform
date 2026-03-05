@@ -71,10 +71,9 @@ CREATE TABLE IF NOT EXISTS api_keys (
     id TEXT PRIMARY KEY,
     gateway_id TEXT NOT NULL DEFAULT 'platform-gateway-id',
     name TEXT NOT NULL,
-    api_key TEXT NOT NULL UNIQUE,
+    api_key_hashes JSONB NOT NULL DEFAULT '{}'::jsonb,
     masked_api_key TEXT NOT NULL,
     apiId TEXT NOT NULL,
-    operations TEXT NOT NULL DEFAULT '*',
     status TEXT NOT NULL CHECK(status IN ('active', 'revoked', 'expired')) DEFAULT 'active',
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     created_by TEXT NOT NULL DEFAULT 'system',
@@ -89,7 +88,6 @@ CREATE TABLE IF NOT EXISTS api_keys (
     UNIQUE (apiId, name, gateway_id)
 );
 
-CREATE INDEX IF NOT EXISTS idx_api_key ON api_keys(api_key);
 CREATE INDEX IF NOT EXISTS idx_api_key_api ON api_keys(apiId);
 CREATE INDEX IF NOT EXISTS idx_api_key_status ON api_keys(status);
 CREATE INDEX IF NOT EXISTS idx_api_key_expiry ON api_keys(expires_at);

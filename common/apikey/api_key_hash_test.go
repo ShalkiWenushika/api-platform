@@ -34,17 +34,16 @@ func TestAPIKeyHashedValidation(t *testing.T) {
 
 	// Create API key with hashed value
 	apiKey := &APIKey{
-		ID:         "test-id-1",
-		Name:       "test-key",
-		Source:     "local",
-		APIKey:     hashedAPIKey, // Store hashed key
-		APIId:      "api-123",
-		Operations: "[\"*\"]",
-		Status:     Active,
-		CreatedAt:  time.Now(),
-		CreatedBy:  "test-user",
-		UpdatedAt:  time.Now(),
-		ExpiresAt:  nil,
+		ID:        "test-id-1",
+		Name:      "test-key",
+		Source:    "local",
+		APIKey:    hashedAPIKey, // Store hashed key
+		APIId:     "api-123",
+		Status:    Active,
+		CreatedAt: time.Now(),
+		CreatedBy: "test-user",
+		UpdatedAt: time.Now(),
+		ExpiresAt: nil,
 	}
 
 	// Store the API key
@@ -54,7 +53,7 @@ func TestAPIKeyHashedValidation(t *testing.T) {
 	}
 
 	// Test validation with correct plain text key
-	valid, err := store.ValidateAPIKey("api-123", "/test", "GET", plainAPIKey)
+	valid, err := store.ValidateAPIKey("api-123", plainAPIKey)
 	if err != nil {
 		t.Fatalf("Validation failed with error: %v", err)
 	}
@@ -72,17 +71,16 @@ func TestAPIKeyHashedValidationFailures(t *testing.T) {
 	hashedAPIKey := ComputeAPIKeyHash(plainAPIKey)
 
 	apiKey := &APIKey{
-		ID:         "test-id-2",
-		Name:       "test-key-2",
-		APIKey:     hashedAPIKey,
-		Source:     "local",
-		APIId:      "api-456",
-		Operations: "[\"*\"]",
-		Status:     Active,
-		CreatedAt:  time.Now(),
-		CreatedBy:  "test-user",
-		UpdatedAt:  time.Now(),
-		ExpiresAt:  nil,
+		ID:        "test-id-2",
+		Name:      "test-key-2",
+		APIKey:    hashedAPIKey,
+		Source:    "local",
+		APIId:     "api-456",
+		Status:    Active,
+		CreatedAt: time.Now(),
+		CreatedBy: "test-user",
+		UpdatedAt: time.Now(),
+		ExpiresAt: nil,
 	}
 
 	err := store.StoreAPIKey("api-456", apiKey)
@@ -92,7 +90,7 @@ func TestAPIKeyHashedValidationFailures(t *testing.T) {
 
 	// Test validation with wrong plain text key
 	wrongKey := "apip_wrong399ef29761f92f4f6d2dbd6dcd78399b3bcb8c53417cb23726e5780ac999"
-	valid, err := store.ValidateAPIKey("api-456", "/test", "GET", wrongKey)
+	valid, err := store.ValidateAPIKey("api-456", wrongKey)
 	if err != nil {
 		if err != ErrNotFound {
 			t.Fatalf("Expected ErrNotFound, got: %v", err)
@@ -103,7 +101,7 @@ func TestAPIKeyHashedValidationFailures(t *testing.T) {
 	}
 
 	// Test validation with non-existent API
-	valid, err = store.ValidateAPIKey("non-existent-api", "/test", "GET", plainAPIKey)
+	valid, err = store.ValidateAPIKey("non-existent-api", plainAPIKey)
 	if err == nil {
 		t.Error("Expected error for non-existent API")
 	}
@@ -121,17 +119,16 @@ func TestAPIKeyHashedRevocation(t *testing.T) {
 	hashedAPIKey := ComputeAPIKeyHash(plainAPIKey)
 
 	apiKey := &APIKey{
-		ID:         "test-id-3",
-		Name:       "revoke-test-key",
-		APIKey:     hashedAPIKey,
-		Source:     "local",
-		APIId:      "api-789",
-		Operations: "[\"*\"]",
-		Status:     Active,
-		CreatedAt:  time.Now(),
-		CreatedBy:  "test-user",
-		UpdatedAt:  time.Now(),
-		ExpiresAt:  nil,
+		ID:        "test-id-3",
+		Name:      "revoke-test-key",
+		APIKey:    hashedAPIKey,
+		Source:    "local",
+		APIId:     "api-789",
+		Status:    Active,
+		CreatedAt: time.Now(),
+		CreatedBy: "test-user",
+		UpdatedAt: time.Now(),
+		ExpiresAt: nil,
 	}
 
 	err := store.StoreAPIKey("api-789", apiKey)
@@ -140,7 +137,7 @@ func TestAPIKeyHashedRevocation(t *testing.T) {
 	}
 
 	// Verify key works before revocation
-	valid, err := store.ValidateAPIKey("api-789", "/test", "GET", plainAPIKey)
+	valid, err := store.ValidateAPIKey("api-789", plainAPIKey)
 	if err != nil {
 		t.Fatalf("Validation failed before revocation: %v", err)
 	}
@@ -155,7 +152,7 @@ func TestAPIKeyHashedRevocation(t *testing.T) {
 	}
 
 	// Verify key no longer works after revocation
-	valid, err = store.ValidateAPIKey("api-789", "/test", "GET", plainAPIKey)
+	valid, err = store.ValidateAPIKey("api-789", plainAPIKey)
 	if err != nil && err != ErrNotFound {
 		t.Fatalf("Unexpected error during validation after revocation: %v", err)
 	}

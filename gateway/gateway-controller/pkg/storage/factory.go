@@ -62,6 +62,9 @@ func NewStorage(cfg BackendConfig, logger *slog.Logger) (Storage, error) {
 
 		store := newSQLStore(backend.db, backend.logger, "postgres", cfg.GatewayID)
 		store.rebindQuery = func(query string) string { return sqlx.Rebind(sqlx.DOLLAR, query) }
+		store.jsonExtractText = func(column, jsonKey string) string {
+			return fmt.Sprintf("%s->>'%s'", column, jsonKey)
+		}
 		store.isConfigUniqueViolation = isPostgresUniqueConstraintError
 		store.isCertificateUniqueViolation = isPostgresCertificateUniqueConstraintError
 		store.isTemplateUniqueViolation = isPostgresTemplateUniqueConstraintError

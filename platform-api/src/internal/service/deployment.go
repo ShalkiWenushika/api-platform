@@ -38,6 +38,7 @@ import (
 // DeploymentService handles business logic for API deployment operations
 type DeploymentService struct {
 	apiRepo              repository.APIRepository
+	apiKeyRepo           repository.APIKeyRepository
 	artifactRepo         repository.ArtifactRepository
 	deploymentRepo       repository.DeploymentRepository
 	gatewayRepo          repository.GatewayRepository
@@ -51,6 +52,7 @@ type DeploymentService struct {
 // NewDeploymentService creates a new deployment service
 func NewDeploymentService(
 	apiRepo repository.APIRepository,
+	apiKeyRepo repository.APIKeyRepository,
 	artifactRepo repository.ArtifactRepository,
 	deploymentRepo repository.DeploymentRepository,
 	gatewayRepo repository.GatewayRepository,
@@ -62,6 +64,7 @@ func NewDeploymentService(
 ) *DeploymentService {
 	return &DeploymentService{
 		apiRepo:              apiRepo,
+		apiKeyRepo:           apiKeyRepo,
 		artifactRepo:         artifactRepo,
 		deploymentRepo:       deploymentRepo,
 		gatewayRepo:          gatewayRepo,
@@ -207,6 +210,7 @@ func (s *DeploymentService) DeployAPI(apiUUID string, req *api.DeployRequest, or
 		if err := s.gatewayEventsService.BroadcastDeploymentEvent(gatewayID, deploymentEvent); err != nil {
 			s.slogger.Warn("Failed to broadcast deployment event", "error", err)
 		}
+
 	}
 
 	// Return deployment response (status and updatedAt are set by CreateDeploymentWithLimitEnforcement)
@@ -685,3 +689,5 @@ func toAPIDeploymentResponse(
 		UpdatedAt:        updatedAt,
 	}, nil
 }
+
+

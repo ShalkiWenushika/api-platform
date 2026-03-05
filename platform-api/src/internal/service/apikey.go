@@ -27,25 +27,32 @@ import (
 	"platform-api/src/internal/constants"
 	"platform-api/src/internal/model"
 	"platform-api/src/internal/repository"
+	"platform-api/src/internal/utils"
+
+	"github.com/google/uuid"
 )
 
 // APIKeyService handles API key management operations for external API key injection
 type APIKeyService struct {
 	apiRepo              repository.APIRepository
+	apiKeyRepo           repository.APIKeyRepository
 	gatewayEventsService *GatewayEventsService
+	hashAlgorithms       []string
 	slogger              *slog.Logger
 }
 
 // NewAPIKeyService creates a new API key service instance
-func NewAPIKeyService(apiRepo repository.APIRepository, gatewayEventsService *GatewayEventsService, slogger *slog.Logger) *APIKeyService {
+func NewAPIKeyService(apiRepo repository.APIRepository, apiKeyRepo repository.APIKeyRepository, gatewayEventsService *GatewayEventsService, hashAlgorithms []string, slogger *slog.Logger) *APIKeyService {
 	return &APIKeyService{
 		apiRepo:              apiRepo,
+		apiKeyRepo:           apiKeyRepo,
 		gatewayEventsService: gatewayEventsService,
+		hashAlgorithms:       hashAlgorithms,
 		slogger:              slogger,
 	}
 }
 
-// CreateAPIKey hashes an external API key and broadcasts it to gateways where the API is deployed.
+// CreateAPIKey hashes an external API key, persists it to the database, and broadcasts it to gateways where the API is deployed.
 // This method is used when external platforms inject API keys to hybrid gateways.
 func (s *APIKeyService) CreateAPIKey(ctx context.Context, apiHandle, orgId, userId string, req *api.CreateAPIKeyRequest) error {
 	// Resolve API handle to UUID
@@ -80,33 +87,77 @@ func (s *APIKeyService) CreateAPIKey(ctx context.Context, apiHandle, orgId, user
 		return constants.ErrGatewayUnavailable
 	}
 
-	operations := "[\"*\"]" // Default to all operations
-
-	// Build the API key created event
-	// Note: API key is sent as plain text - hashing happens in the gateway/gateway-runtime/policy-engine
-	event := &model.APIKeyCreatedEvent{
-		ApiId:         apiHandle,
-		ApiKey:        req.ApiKey, // Send plain API key (no hashing in platform-api)
-		ExternalRefId: req.ExternalRefId,
-		Operations:    operations,
+	// Hash the API key using configured algorithms
+	apiKeyHashes, err := utils.HashAPIKey(req.ApiKey, s.hashAlgorithms)
+	if err != nil {
+		s.slogger.Error("Failed to hash API key", "apiHandle", apiHandle, "error", err)
+		return fmt.Errorf("failed to hash API key: %w", err)
 	}
 
-	// Handle optional pointer fields
-	if req.Name != nil {
-		event.Name = *req.Name
-	}
-	if req.DisplayName != nil {
-		event.DisplayName = *req.DisplayName
-	}
-	if req.ExpiresAt != nil {
-		expiresAtStr := req.ExpiresAt.Format(time.RFC3339)
-		event.ExpiresAt = &expiresAtStr
-	}
+	// Generate masked API key for display
+	maskedAPIKey := utils.MaskAPIKey(req.ApiKey)
 
-	// Get key name for logging
+	// Build the API key model
 	keyName := ""
 	if req.Name != nil {
 		keyName = *req.Name
+	}
+
+	apiKeyModel := &model.APIKey{
+		ID:           uuid.New().String(),
+		ArtifactUUID: apiId,
+		Name:         keyName,
+		MaskedAPIKey: maskedAPIKey,
+		APIKeyHashes: apiKeyHashes,
+		Status:       "active",
+		CreatedBy:    userId,
+	}
+
+	// Handle expiration
+	if req.ExpiresAt != nil {
+		apiKeyModel.ExpiresAt = req.ExpiresAt
+	} else if req.ExpiresIn != nil {
+		unitStr := string(req.ExpiresIn.Unit)
+		timeDuration := time.Duration(req.ExpiresIn.Duration)
+		switch unitStr {
+		case "seconds":
+			timeDuration *= time.Second
+		case "minutes":
+			timeDuration *= time.Minute
+		case "hours":
+			timeDuration *= time.Hour
+		case "days":
+			timeDuration *= 24 * time.Hour
+		case "weeks":
+			timeDuration *= 7 * 24 * time.Hour
+		case "months":
+			timeDuration *= 30 * 24 * time.Hour
+		default:
+			return fmt.Errorf("unsupported expiration unit: %s", req.ExpiresIn.Unit)
+		}
+		expiry := time.Now().Add(timeDuration)
+		apiKeyModel.ExpiresAt = &expiry
+	}
+
+	// Persist to database FIRST
+	s.slogger.Info("Persisting API key to database", "apiHandle", apiHandle, "keyName", keyName)
+	if err := s.apiKeyRepo.CreateAPIKey(apiKeyModel); err != nil {
+		s.slogger.Error("Failed to persist API key to database", "apiHandle", apiHandle, "keyName", keyName, "error", err)
+		return fmt.Errorf("failed to persist API key: %w", err)
+	}
+
+	// Build the API key created event with hashes
+	event := &model.APIKeyCreatedEvent{
+		ApiId:         apiHandle,
+		Name:          keyName,
+		ApiKeyHashes:  apiKeyHashes, // Send hashes instead of plain text
+		MaskedApiKey:  maskedAPIKey,
+		ExternalRefId: req.ExternalRefId,
+	}
+
+	if apiKeyModel.ExpiresAt != nil {
+		expiresAtStr := apiKeyModel.ExpiresAt.Format(time.RFC3339)
+		event.ExpiresAt = &expiresAtStr
 	}
 
 	// Track delivery statistics
@@ -118,7 +169,7 @@ func (s *APIKeyService) CreateAPIKey(ctx context.Context, apiHandle, orgId, user
 	for _, gateway := range gateways {
 		gatewayID := gateway.ID
 
-		s.slogger.Info("Broadcasting API key created event", "apiHandle", apiHandle, "gatewayId", gatewayID, "keyName", keyName)
+		s.slogger.Info("Broadcasting API key created event with hashes", "apiHandle", apiHandle, "gatewayId", gatewayID, "keyName", keyName)
 
 		// Broadcast with retries
 		err := s.gatewayEventsService.BroadcastAPIKeyCreatedEvent(gatewayID, userId, event)
@@ -136,6 +187,7 @@ func (s *APIKeyService) CreateAPIKey(ctx context.Context, apiHandle, orgId, user
 	s.slogger.Info("API key creation broadcast summary", "apiHandle", apiHandle, "keyName", keyName, "total", len(gateways), "success", successCount, "failed", failureCount)
 
 	// Return error if all deliveries failed
+	// Note: API key remains persisted in database for eventual consistency
 	if successCount == 0 {
 		s.slogger.Error("Failed to deliver API key to any gateway", "apiHandle", apiHandle, "keyName", keyName)
 		return fmt.Errorf("failed to deliver API key event to any gateway: %w", lastError)
@@ -183,23 +235,72 @@ func (s *APIKeyService) UpdateAPIKey(ctx context.Context, apiHandle, orgId, keyN
 		return constants.ErrGatewayUnavailable
 	}
 
-	// Build the API key updated event
-	// Note: API key is sent as plain text - hashing happens in the gateway/gateway-runtime/policy-engine
+	// Hash the API key using configured algorithms
+	apiKeyHashes, err := utils.HashAPIKey(req.ApiKey, s.hashAlgorithms)
+	if err != nil {
+		s.slogger.Error("Failed to hash API key for update", "apiHandle", apiHandle, "keyName", keyName, "error", err)
+		return fmt.Errorf("failed to hash API key: %w", err)
+	}
+
+	// Generate masked API key for display
+	maskedAPIKey := utils.MaskAPIKey(req.ApiKey)
+
+	// Get existing API key to update
+	existingKey, err := s.apiKeyRepo.GetAPIKeyByName(apiId, keyName)
+	if err != nil {
+		s.slogger.Error("Failed to get existing API key for update", "apiHandle", apiHandle, "keyName", keyName, "error", err)
+		return fmt.Errorf("failed to get existing API key: %w", err)
+	}
+	if existingKey == nil {
+		s.slogger.Warn("API key not found for update", "apiHandle", apiHandle, "keyName", keyName)
+		return fmt.Errorf("API key not found: %s", keyName)
+	}
+
+	// Update the API key model
+	existingKey.MaskedAPIKey = maskedAPIKey
+	existingKey.APIKeyHashes = apiKeyHashes
+	if req.ExpiresAt != nil {
+		existingKey.ExpiresAt = req.ExpiresAt
+	}
+	if req.ExpiresIn != nil {
+		unitStr := string(req.ExpiresIn.Unit)
+		if req.ExpiresAt == nil {
+			timeDuration := time.Duration(req.ExpiresIn.Duration)
+			switch unitStr {
+			case "seconds":
+				timeDuration *= time.Second
+			case "minutes":
+				timeDuration *= time.Minute
+			case "hours":
+				timeDuration *= time.Hour
+			case "days":
+				timeDuration *= 24 * time.Hour
+			case "weeks":
+				timeDuration *= 7 * 24 * time.Hour
+			case "months":
+				timeDuration *= 30 * 24 * time.Hour
+			}
+			expiry := time.Now().Add(timeDuration)
+			existingKey.ExpiresAt = &expiry
+		}
+	}
+	// Persist update to database FIRST
+	s.slogger.Info("Persisting API key update to database", "apiHandle", apiHandle, "keyName", keyName)
+	if err := s.apiKeyRepo.UpdateAPIKey(existingKey); err != nil {
+		s.slogger.Error("Failed to persist API key update to database", "apiHandle", apiHandle, "keyName", keyName, "error", err)
+		return fmt.Errorf("failed to persist API key update: %w", err)
+	}
+
+	// Build the API key updated event with hashes
 	event := &model.APIKeyUpdatedEvent{
-		ApiId:   apiHandle,
-		KeyName: keyName,
-		ApiKey:  req.ApiKey, // Send plain API key (no hashing in platform-api)
+		ApiId:        apiHandle,
+		KeyName:      keyName,
+		ApiKeyHashes: apiKeyHashes, // Send hashes instead of plain text
 	}
 
 	// Handle optional pointer fields
-	if req.DisplayName != nil {
-		event.DisplayName = *req.DisplayName
-	}
 	if req.ExternalRefId != nil {
 		event.ExternalRefId = req.ExternalRefId
-	}
-	if req.Operations != nil {
-		event.Operations = *req.Operations
 	}
 	if req.ExpiresAt != nil {
 		expiresAtStr := req.ExpiresAt.Format(time.RFC3339)
@@ -246,7 +347,7 @@ func (s *APIKeyService) UpdateAPIKey(ctx context.Context, apiHandle, orgId, keyN
 	// Log summary
 	s.slogger.Info("API key update broadcast summary", "apiHandle", apiHandle, "keyName", keyName, "total", len(gateways), "success", successCount, "failed", failureCount)
 
-	// Return error if all deliveries failed
+	// Return error if all deliveries failed - note: we don't rollback update since it's a modification, not creation
 	if successCount == 0 {
 		s.slogger.Error("Failed to deliver API key update to any gateway", "apiHandle", apiHandle, "keyName", keyName)
 		return fmt.Errorf("failed to deliver API key update event to any gateway: %w", lastError)
@@ -288,6 +389,25 @@ func (s *APIKeyService) RevokeAPIKey(ctx context.Context, apiHandle, orgId, keyN
 		return constants.ErrGatewayUnavailable
 	}
 
+	// Get existing API key to revoke
+	existingKey, err := s.apiKeyRepo.GetAPIKeyByName(apiId, keyName)
+	if err != nil {
+		s.slogger.Error("Failed to get existing API key for revocation", "apiHandle", apiHandle, "keyName", keyName, "error", err)
+		return fmt.Errorf("failed to get existing API key: %w", err)
+	}
+	if existingKey == nil {
+		s.slogger.Warn("API key not found for revocation", "apiHandle", apiHandle, "keyName", keyName)
+		// Don't return error for security reasons - proceed with broadcast anyway
+	} else {
+		// Mark as revoked and persist to database FIRST
+		existingKey.Status = "revoked"
+		s.slogger.Info("Persisting API key revocation to database", "apiHandle", apiHandle, "keyName", keyName)
+		if err := s.apiKeyRepo.UpdateAPIKey(existingKey); err != nil {
+			s.slogger.Error("Failed to persist API key revocation to database", "apiHandle", apiHandle, "keyName", keyName, "error", err)
+			return fmt.Errorf("failed to persist API key revocation: %w", err)
+		}
+	}
+
 	// Build the API key revoked event
 	event := &model.APIKeyRevokedEvent{
 		ApiId:   apiHandle,
@@ -325,6 +445,18 @@ func (s *APIKeyService) RevokeAPIKey(ctx context.Context, apiHandle, orgId, keyN
 	}
 	if failureCount > 0 {
 		s.slogger.Warn("Partial delivery of API key revocation", "apiHandle", apiId, "keyName", keyName, "failureCount", failureCount, "total", len(gateways))
+	}
+
+	// Delete the API key from database (complete removal) to prevent table growth
+	// Note: This is cleanup only - the revocation is already complete (status marked and broadcasted)
+	if existingKey != nil {
+		if err := s.apiKeyRepo.DeleteAPIKey(existingKey.ID, existingKey.ArtifactUUID); err != nil {
+			s.slogger.Warn("Failed to delete revoked API key from database, but revocation was successful", "apiHandle", apiHandle, "keyName", keyName, "error", err)
+			// Don't return error - revocation was already successful
+			// The key is marked as revoked in DB and gateways were notified
+		} else {
+			s.slogger.Info("Revoked API key deleted from database", "apiHandle", apiHandle, "keyName", keyName)
+		}
 	}
 
 	return nil

@@ -871,3 +871,110 @@ func (s *GatewayEventsService) broadcastAPIKeyUpdated(gatewayID, userId string, 
 
 	return nil
 }
+
+// BroadcastAPIKeysBatchSyncEvent sends a batch of API keys to target gateway.
+// This method is used when deploying an API to a new gateway for the first time
+// and existing API keys need to be synced.
+// This method handles:
+// - Looking up gateway connections by gateway ID
+// - Serializing event to JSON
+// - Broadcasting to all connections for the gateway (clustering support)
+// - Payload size validation (1MB limit)
+// - Delivery statistics tracking
+func (s *GatewayEventsService) BroadcastAPIKeysBatchSyncEvent(gatewayID, userId string, event *model.APIKeysBatchSyncEvent) error {
+	return s.broadcastAPIKeysBatchSync(gatewayID, userId, event)
+}
+
+// broadcastAPIKeysBatchSync is the internal implementation for broadcasting batch API keys sync events
+func (s *GatewayEventsService) broadcastAPIKeysBatchSync(gatewayID, userId string, event *model.APIKeysBatchSyncEvent) error {
+	// Create correlation ID for tracing
+	correlationID := uuid.New().String()
+
+	s.slogger.Info("Broadcasting API keys batch sync event to gateway",
+		"gatewayID", gatewayID,
+		"apiId", event.ApiId,
+		"keyCount", len(event.ApiKeys),
+		"correlationId", correlationID)
+
+	// Serialize payload
+	payloadJSON, err := json.Marshal(event)
+	if err != nil {
+		s.slogger.Error("Failed to marshal API keys batch sync event",
+			"gatewayID", gatewayID, "error", err)
+		return fmt.Errorf("failed to marshal event: %w", err)
+	}
+
+	// Validate payload size (1MB limit)
+	if len(payloadJSON) > MaxEventPayloadSize {
+		s.slogger.Error("API keys batch sync event payload exceeds maximum size",
+			"gatewayID", gatewayID,
+			"payloadSize", len(payloadJSON),
+			"maxSize", MaxEventPayloadSize)
+		return fmt.Errorf("event payload size %d exceeds maximum %d",
+			len(payloadJSON), MaxEventPayloadSize)
+	}
+
+	// Create gateway event DTO
+	eventDTO := dto.GatewayEventDTO{
+		Type:          "apikeys.sync",
+		Payload:       event,
+		Timestamp:     time.Now().Format(time.RFC3339),
+		CorrelationID: correlationID,
+		UserId:        userId,
+	}
+
+	// Serialize complete event
+	eventJSON, err := json.Marshal(eventDTO)
+	if err != nil {
+		s.slogger.Error("Failed to marshal event DTO",
+			"gatewayID", gatewayID, "correlationId", correlationID, "error", err)
+		return fmt.Errorf("failed to marshal event: %w", err)
+	}
+
+	// Get all connections for this gateway
+	connections := s.manager.GetConnections(gatewayID)
+	if len(connections) == 0 {
+		s.slogger.Warn("No active connections for gateway",
+			"gatewayID", gatewayID, "correlationId", correlationID)
+		return fmt.Errorf("no active connections for gateway: %s", gatewayID)
+	}
+
+	// Broadcast to all connections
+	successCount := 0
+	failureCount := 0
+	var lastError error
+
+	for _, conn := range connections {
+		err := conn.Send(eventJSON)
+		if err != nil {
+			failureCount++
+			lastError = err
+			s.slogger.Error("Failed to send API keys batch sync event",
+				"gatewayID", gatewayID, "connectionID", conn.ConnectionID,
+				"correlationId", correlationID, "error", err)
+			conn.DeliveryStats.IncrementFailed(fmt.Sprintf("send error: %v", err))
+		} else {
+			successCount++
+			s.slogger.Info("API keys batch sync event sent",
+				"gatewayID", gatewayID, "connectionID", conn.ConnectionID,
+				"correlationId", correlationID, "keyCount", len(event.ApiKeys))
+			conn.DeliveryStats.IncrementTotalSent()
+			s.manager.IncrementTotalEventsSent()
+		}
+	}
+
+	// Log broadcast summary
+	s.slogger.Info("API keys batch sync event broadcast completed",
+		"gatewayID", gatewayID,
+		"keyCount", len(event.ApiKeys),
+		"successCount", successCount,
+		"failureCount", failureCount,
+		"correlationId", correlationID)
+
+	// Return error if all deliveries failed
+	if successCount == 0 && failureCount > 0 {
+		return fmt.Errorf("failed to deliver batch sync event to any gateway connection: %w", lastError)
+	}
+
+	return nil
+}

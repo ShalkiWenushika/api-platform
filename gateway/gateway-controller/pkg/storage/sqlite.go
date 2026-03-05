@@ -38,7 +38,7 @@ const (
 	sqliteUniqueCertificatesName       = "UNIQUE constraint failed: certificates.name, certificates.gateway_id"
 	sqliteUniqueCertificatesID         = "UNIQUE constraint failed: certificates.id"
 	sqliteUniqueTemplatesHandle        = "UNIQUE constraint failed: llm_provider_templates.handle, llm_provider_templates.gateway_id"
-	sqliteUniqueAPIKeysKey             = "UNIQUE constraint failed: api_keys.api_key"
+	sqliteUniqueAPIKeysKey             = "UNIQUE constraint failed: api_keys.api_key_hashes"
 	sqliteUniqueAPIKeysID              = "UNIQUE constraint failed: api_keys.id"
 )
 
@@ -91,7 +91,7 @@ func (s *SQLiteStorage) initSchema() error {
 	}
 
 	if version == 0 {
-		s.logger.Info("Initializing database schema (version 8)")
+		s.logger.Info("Initializing database schema (version 10)")
 		s.logger.Debug("Creating schema with SQL", slog.String("schema_sql", schemaSQL))
 
 		// Execute schema creation SQL
@@ -202,8 +202,12 @@ func (s *SQLiteStorage) initSchema() error {
 				return fmt.Errorf("failed to migrate schema to version 5 (api_keys): %w", err)
 			}
 
-			if _, err := s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_api_key ON api_keys(api_key);`); err != nil {
-				return fmt.Errorf("failed to create api_keys key index: %w", err)
+			// Only index api_key if the column still has that name (schema v10+ renames it to api_key_hashes)
+			var apiKeyColExists int
+			if err := s.db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('api_keys') WHERE name = 'api_key'`).Scan(&apiKeyColExists); err == nil && apiKeyColExists > 0 {
+				if _, err := s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_api_key ON api_keys(api_key);`); err != nil {
+					return fmt.Errorf("failed to create api_keys key index: %w", err)
+				}
 			}
 			if _, err := s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_api_key_api ON api_keys(apiId);`); err != nil {
 				return fmt.Errorf("failed to create api_keys handle index: %w", err)
@@ -408,6 +412,25 @@ func (s *SQLiteStorage) initSchema() error {
 		if version == 7 {
 			s.logger.Info("Migrating schema to version 8 (adding the new column gateway_id)")
 
+			// Determine the current column name for the API key hash value.
+			// Schema v10+ renames api_key → api_key_hashes, so when running
+			// this migration on a database that was already initialised with
+			// the v10 schema, we must read from the renamed column.
+			apiKeySourceCol := "api_key"
+			var apiKeyV8ColCheck int
+			if err := s.db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('api_keys') WHERE name = 'api_key'`).Scan(&apiKeyV8ColCheck); err == nil && apiKeyV8ColCheck == 0 {
+				apiKeySourceCol = "api_key_hashes"
+			}
+
+			// Determine whether the operations column exists in the source table.
+			// Schema v10+ drops this column, so when running this migration on a
+			// database initialised with v10 schema, we must use a literal default.
+			operationsSourceExpr := "operations"
+			var operationsColCheck int
+			if err := s.db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('api_keys') WHERE name = 'operations'`).Scan(&operationsColCheck); err == nil && operationsColCheck == 0 {
+				operationsSourceExpr = "'*'"
+			}
+
 			if _, err := s.db.Exec("PRAGMA foreign_keys = OFF"); err != nil {
 				return fmt.Errorf("failed to disable foreign keys for migration to version 8: %w", err)
 			}
@@ -554,17 +577,17 @@ func (s *SQLiteStorage) initSchema() error {
 				return fmt.Errorf("failed to create api_keys_new_v8 table: %w", err)
 			}
 
-			if _, err = tx.Exec(`
+			if _, err = tx.Exec(fmt.Sprintf(`
 				INSERT INTO api_keys_new_v8 (
 					id, name, api_key, masked_api_key, apiId, operations, status,
 					created_at, created_by, updated_at, expires_at, expires_in_unit, expires_in_duration,
 					source, external_ref_id, index_key, display_name
 				)
-				SELECT id, name, api_key, masked_api_key, apiId, operations, status,
+				SELECT id, name, %s, masked_api_key, apiId, %s, status,
 				       created_at, created_by, updated_at, expires_at, expires_in_unit, expires_in_duration,
 				       source, external_ref_id, index_key, display_name
 				FROM api_keys;
-			`); err != nil {
+			`, apiKeySourceCol, operationsSourceExpr)); err != nil {
 				return fmt.Errorf("failed to copy data to api_keys_new_v8: %w", err)
 			}
 
@@ -713,6 +736,48 @@ func (s *SQLiteStorage) initSchema() error {
 
 			s.logger.Info("Schema migrated to version 9 (removed index_key)")
 			version = 9
+		}
+
+		// Migration to version 10: rename api_key column to api_key_hashes
+		if version == 9 {
+			s.logger.Info("Migrating schema to version 10 (renaming api_key to api_key_hashes)")
+
+			tx, err := s.db.BeginTx(context.Background(), nil)
+			if err != nil {
+				return fmt.Errorf("failed to begin transaction for migration to version 10: %w", err)
+			}
+			defer func() {
+				if err != nil {
+					if rbErr := tx.Rollback(); rbErr != nil {
+						s.logger.Error("Failed to rollback migration transaction", slog.Any("error", rbErr))
+					}
+				}
+			}()
+
+			// Drop the old index on api_key before renaming
+			if _, err = tx.Exec(`DROP INDEX IF EXISTS idx_api_key;`); err != nil {
+				return fmt.Errorf("failed to drop idx_api_key in version 10 migration: %w", err)
+			}
+
+			// Check if api_key column exists (it may have already been renamed)
+			var apiKeyExists int
+			err = tx.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('api_keys') WHERE name = 'api_key'`).Scan(&apiKeyExists)
+			if err == nil && apiKeyExists > 0 {
+				if _, err = tx.Exec(`ALTER TABLE api_keys RENAME COLUMN api_key TO api_key_hashes;`); err != nil {
+					return fmt.Errorf("failed to rename api_key column in version 10 migration: %w", err)
+				}
+			}
+
+			if _, err = tx.Exec("PRAGMA user_version = 10"); err != nil {
+				return fmt.Errorf("failed to set schema version to 10: %w", err)
+			}
+
+			if err = tx.Commit(); err != nil {
+				return fmt.Errorf("failed to commit migration to version 10: %w", err)
+			}
+
+			s.logger.Info("Schema migrated to version 10 (renamed api_key to api_key_hashes)")
+			version = 10
 		}
 	}
 

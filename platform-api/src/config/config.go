@@ -52,6 +52,8 @@ type Server struct {
 	Deployments Deployments `envconfig:"DEPLOYMENTS"`
 	// TLS configurations
 	TLS TLS `envconfig:"TLS"`
+	// API Key configurations
+	APIKey APIKey `envconfig:"API_KEY"`
 }
 
 // TLS holds TLS certificate configuration
@@ -122,6 +124,11 @@ type DefaultDevPortal struct {
 // Deployments holds deployment-specific configuration
 type Deployments struct {
 	MaxPerAPIGateway int `envconfig:"MAX_PER_API_GATEWAY" default:"20"`
+}
+
+// APIKey holds API key-specific configuration
+type APIKey struct {
+	HashAlgorithms []string `envconfig:"HASH_ALGORITHMS" default:"sha256"`
 }
 
 // package-level variable and mutex for thread safety

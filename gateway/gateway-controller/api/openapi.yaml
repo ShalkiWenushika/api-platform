@@ -2382,6 +2382,22 @@ components:
             This field is optional and used for tracing purposes only.
             The gateway generates its own internal ID for tracking.
           example: "cloud-apim-key-98765"
+        apiKeyHashes:
+          type: object
+          description: |
+            Pre-computed hashes of the API key keyed by algorithm (e.g. "sha256").
+            When provided, the gateway stores these hashes directly without re-hashing.
+            Used for external key injection where the plain-text key is not transmitted.
+          additionalProperties:
+            type: string
+          example:
+            sha256: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        maskedApiKey:
+          type: string
+          description: |
+            Masked/redacted version of the API key for display purposes.
+            Only relevant when apiKeyHashes is provided.
+          example: "***bcdef"
     APIKeyCreationResponse:
       type: object
       properties:

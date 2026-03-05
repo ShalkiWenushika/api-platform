@@ -38,7 +38,7 @@ func TestNewAPIKeyService(t *testing.T) {
 	store := storage.NewConfigStore()
 	apiKeyConfig := &config.APIKeyConfig{
 		APIKeysPerUserPerAPI: 10,
-		Algorithm:            constants.HashingAlgorithmSHA256,
+
 	}
 
 	service := NewAPIKeyService(store, nil, nil, apiKeyConfig)
@@ -139,7 +139,7 @@ func TestParsedAPIKey(t *testing.T) {
 func TestMaskAPIKey(t *testing.T) {
 	service := &APIKeyService{
 		apiKeyConfig: &config.APIKeyConfig{
-			Algorithm: constants.HashingAlgorithmSHA256,
+	
 		},
 	}
 
@@ -181,7 +181,7 @@ func TestMaskAPIKey(t *testing.T) {
 func TestGenerateAPIKeyValue(t *testing.T) {
 	service := &APIKeyService{
 		apiKeyConfig: &config.APIKeyConfig{
-			Algorithm: constants.HashingAlgorithmSHA256,
+	
 		},
 	}
 
@@ -213,7 +213,7 @@ func TestGenerateAPIKeyValue(t *testing.T) {
 func TestGenerateShortUniqueID(t *testing.T) {
 	service := &APIKeyService{
 		apiKeyConfig: &config.APIKeyConfig{
-			Algorithm: constants.HashingAlgorithmSHA256,
+	
 		},
 	}
 
@@ -246,7 +246,7 @@ func TestGenerateShortUniqueID(t *testing.T) {
 func TestIsAdmin(t *testing.T) {
 	service := &APIKeyService{
 		apiKeyConfig: &config.APIKeyConfig{
-			Algorithm: constants.HashingAlgorithmSHA256,
+	
 		},
 	}
 
@@ -288,7 +288,7 @@ func TestIsAdmin(t *testing.T) {
 func TestIsDeveloper(t *testing.T) {
 	service := &APIKeyService{
 		apiKeyConfig: &config.APIKeyConfig{
-			Algorithm: constants.HashingAlgorithmSHA256,
+	
 		},
 	}
 
@@ -321,7 +321,7 @@ func TestCanRevokeAPIKey(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	service := &APIKeyService{
 		apiKeyConfig: &config.APIKeyConfig{
-			Algorithm: constants.HashingAlgorithmSHA256,
+	
 		},
 	}
 
@@ -370,7 +370,7 @@ func TestCanRegenerateAPIKey(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	service := &APIKeyService{
 		apiKeyConfig: &config.APIKeyConfig{
-			Algorithm: constants.HashingAlgorithmSHA256,
+	
 		},
 	}
 
@@ -410,7 +410,7 @@ func TestFilterAPIKeysByUser(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	service := &APIKeyService{
 		apiKeyConfig: &config.APIKeyConfig{
-			Algorithm: constants.HashingAlgorithmSHA256,
+	
 		},
 	}
 
@@ -455,43 +455,12 @@ func TestFilterAPIKeysByUser(t *testing.T) {
 	})
 }
 
-func TestGenerateOperationsString(t *testing.T) {
-	service := &APIKeyService{
-		apiKeyConfig: &config.APIKeyConfig{
-			Algorithm: constants.HashingAlgorithmSHA256,
-		},
-	}
-
-	t.Run("Empty operations returns wildcard", func(t *testing.T) {
-		result := service.generateOperationsString([]api.Operation{})
-		assert.Equal(t, "[\"*\"]", result)
-	})
-
-	t.Run("Single operation", func(t *testing.T) {
-		ops := []api.Operation{
-			{Method: "GET", Path: "/users"},
-		}
-		result := service.generateOperationsString(ops)
-		assert.Contains(t, result, "GET /users")
-	})
-
-	t.Run("Multiple operations", func(t *testing.T) {
-		ops := []api.Operation{
-			{Method: "GET", Path: "/users"},
-			{Method: "POST", Path: "/users"},
-		}
-		result := service.generateOperationsString(ops)
-		assert.Contains(t, result, "GET /users")
-		assert.Contains(t, result, "POST /users")
-	})
-}
-
 func TestBuildAPIKeyResponse(t *testing.T) {
 	service := &APIKeyService{
 		store: storage.NewConfigStore(),
 		apiKeyConfig: &config.APIKeyConfig{
 			APIKeysPerUserPerAPI: 10,
-			Algorithm:            constants.HashingAlgorithmSHA256,
+	
 		},
 	}
 
@@ -503,14 +472,13 @@ func TestBuildAPIKeyResponse(t *testing.T) {
 
 	t.Run("Valid API key returns success response", func(t *testing.T) {
 		apiKey := &models.APIKey{
-			ID:         "key-id-123",
-			Name:       "my-test-key",
-			APIKey:     "$sha256$salt$hash",
-			APIId:      "api-id-123",
-			Operations: "[\"*\"]",
-			Status:     models.APIKeyStatusActive,
-			CreatedAt:  time.Now(),
-			CreatedBy:  "test-user",
+			ID:        "key-id-123",
+			Name:      "my-test-key",
+			APIKey:    "$sha256$salt$hash",
+			APIId:     "api-id-123",
+			Status:    models.APIKeyStatusActive,
+			CreatedAt: time.Now(),
+			CreatedBy: "test-user",
 		}
 		plainKey := "apip_plain123456789"
 
@@ -522,14 +490,13 @@ func TestBuildAPIKeyResponse(t *testing.T) {
 
 	t.Run("Without plain key does not expose hashed key", func(t *testing.T) {
 		apiKey := &models.APIKey{
-			ID:         "key-id-123",
-			Name:       "my-test-key",
-			APIKey:     "$sha256$salt$hash",
-			APIId:      "api-id-123",
-			Operations: "[\"*\"]",
-			Status:     models.APIKeyStatusActive,
-			CreatedAt:  time.Now(),
-			CreatedBy:  "test-user",
+			ID:        "key-id-123",
+			Name:      "my-test-key",
+			APIKey:    "$sha256$salt$hash",
+			APIId:     "api-id-123",
+			Status:    models.APIKeyStatusActive,
+			CreatedAt: time.Now(),
+			CreatedBy: "test-user",
 		}
 
 		response := service.buildAPIKeyResponse(apiKey, "test-handle", "", false)
@@ -542,7 +509,7 @@ func TestBuildAPIKeyResponse(t *testing.T) {
 func TestCompareAPIKeys(t *testing.T) {
 	service := &APIKeyService{
 		apiKeyConfig: &config.APIKeyConfig{
-			Algorithm: constants.HashingAlgorithmSHA256,
+	
 		},
 	}
 
@@ -566,7 +533,7 @@ func TestCompareAPIKeys(t *testing.T) {
 func TestHashAPIKey_EmptyKey(t *testing.T) {
 	service := &APIKeyService{
 		apiKeyConfig: &config.APIKeyConfig{
-			Algorithm: constants.HashingAlgorithmSHA256,
+	
 		},
 	}
 
@@ -578,7 +545,7 @@ func TestHashAPIKey_EmptyKey(t *testing.T) {
 func TestHashAPIKeyWithSHA256_EmptyKey(t *testing.T) {
 	service := &APIKeyService{
 		apiKeyConfig: &config.APIKeyConfig{
-			Algorithm: constants.HashingAlgorithmSHA256,
+	
 		},
 	}
 
@@ -593,7 +560,7 @@ func TestCreateAPIKeyFromRequest_Expiration_AllUnits(t *testing.T) {
 	service := &APIKeyService{
 		apiKeyConfig: &config.APIKeyConfig{
 			APIKeysPerUserPerAPI: 10,
-			Algorithm:            constants.HashingAlgorithmSHA256,
+	
 		},
 	}
 
@@ -641,19 +608,17 @@ func TestRegenerateAPIKey_Expiration_AllPaths(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	service := &APIKeyService{
 		apiKeyConfig: &config.APIKeyConfig{
-			Algorithm: constants.HashingAlgorithmSHA256,
+	
 		},
 	}
 
-	t.Run("uses existing key duration when no request expiration", func(t *testing.T) {
-		unit := "days"
-		dur := 30
+	t.Run("uses existing key expiry when no request expiration", func(t *testing.T) {
+		existingExpiry := time.Now().Add(30 * 24 * time.Hour)
 		existing := &models.APIKey{
 			ID:        "k1",
 			Name:      "n1",
 			CreatedBy: "u1",
-			Unit:      &unit,
-			Duration:  &dur,
+			ExpiresAt: &existingExpiry,
 		}
 		req := api.APIKeyRegenerationRequest{}
 		key, err := service.regenerateAPIKey(existing, req, "u1", logger)

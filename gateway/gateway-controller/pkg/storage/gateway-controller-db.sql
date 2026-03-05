@@ -137,17 +137,14 @@ CREATE TABLE IF NOT EXISTS api_keys (
     -- Human-readable name for the API key
     name TEXT NOT NULL,
 
-    -- The generated API key (hashed)
-    api_key TEXT NOT NULL UNIQUE,
+    -- API key hashes stored as JSON (e.g. {"sha256": "hash_value"})
+    api_key_hashes TEXT NOT NULL DEFAULT '{}',
 
     -- Masked version of the API key for display purposes
     masked_api_key TEXT NOT NULL,
 
     -- API reference
     apiId TEXT NOT NULL,
-
-    -- Comma-separated list of operations the key will have access to
-    operations TEXT NOT NULL DEFAULT '*',
 
     -- Key status
     status TEXT NOT NULL CHECK(status IN ('active', 'revoked', 'expired')) DEFAULT 'active',
@@ -180,7 +177,6 @@ CREATE TABLE IF NOT EXISTS api_keys (
 );
 
 -- Indexes for API key lookups
-CREATE INDEX IF NOT EXISTS idx_api_key ON api_keys(api_key);
 CREATE INDEX IF NOT EXISTS idx_api_key_api ON api_keys(apiId);
 CREATE INDEX IF NOT EXISTS idx_api_key_status ON api_keys(status);
 CREATE INDEX IF NOT EXISTS idx_api_key_expiry ON api_keys(expires_at);
@@ -188,5 +184,5 @@ CREATE INDEX IF NOT EXISTS idx_created_by ON api_keys(created_by);
 CREATE INDEX IF NOT EXISTS idx_api_key_source ON api_keys(source);
 CREATE INDEX IF NOT EXISTS idx_api_key_external_ref ON api_keys(external_ref_id);
 
--- Set schema version to 9 (removed index_key column, switched to hash-based indexing)
-PRAGMA user_version = 9;
+-- Set schema version to 10
+PRAGMA user_version = 10;

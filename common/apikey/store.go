@@ -21,7 +21,6 @@ package apikey
 import (
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -34,14 +33,10 @@ type APIKey struct {
 	ID string `json:"id" yaml:"id"`
 	// Name of the API key (URL-safe identifier, auto-generated, immutable)
 	Name string `json:"name" yaml:"name"`
-	// DisplayName is the human-readable name (user-provided, mutable)
-	DisplayName string `json:"displayName" yaml:"displayName"`
 	// ApiKey API key with apip_ prefix
 	APIKey string `json:"apiKey" yaml:"apiKey"`
 	// APIId Unique identifier of the API that the key is associated with
 	APIId string `json:"apiId" yaml:"apiId"`
-	// Operations List of API operations the key will have access to
-	Operations string `json:"operations" yaml:"operations"`
 	// Status of the API key
 	Status APIKeyStatus `json:"status" yaml:"status"`
 	// CreatedAt Timestamp when the API key was generated
@@ -168,7 +163,7 @@ func (aks *APIkeyStore) StoreAPIKey(apiId string, apiKey *APIKey) error {
 
 // ValidateAPIKey validates the provided API key against the internal APIkey store
 // Supports both local and external keys using unified hash-based lookup
-func (aks *APIkeyStore) ValidateAPIKey(apiId, apiOperation, operationMethod, providedAPIKey string) (bool, error) {
+func (aks *APIkeyStore) ValidateAPIKey(apiId, providedAPIKey string) (bool, error) {
 	aks.mu.RLock()
 	defer aks.mu.RUnlock()
 
@@ -206,31 +201,7 @@ func (aks *APIkeyStore) ValidateAPIKey(apiId, apiOperation, operationMethod, pro
 		return false, nil
 	}
 
-	// Check if the API key has access to the requested operation
-	// Operations is a JSON string array of allowed operations in format "METHOD path"
-	// Example: ["GET /{country_code}/{city}", "POST /data"], ["*"] for allow all operations
-	var operations []string
-	if err := json.Unmarshal([]byte(targetAPIKey.Operations), &operations); err != nil {
-		return false, fmt.Errorf("invalid operations format: %w", err)
-	}
-
-	// Check if wildcard is present
-	for _, op := range operations {
-		if strings.TrimSpace(op) == "*" {
-			return true, nil
-		}
-	}
-
-	// Check if the requested operation is in the allowed operations list
-	requestedOperation := fmt.Sprintf("%s %s", operationMethod, apiOperation)
-	for _, op := range operations {
-		if strings.TrimSpace(op) == requestedOperation {
-			return true, nil
-		}
-	}
-
-	// Operation not found in allowed list
-	return false, nil
+	return true, nil
 }
 
 // RevokeAPIKey revokes a specific API key by plain text API key value

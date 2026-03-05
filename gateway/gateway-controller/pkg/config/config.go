@@ -661,9 +661,9 @@ func defaultConfig() *Config {
 		},
 		APIKey: APIKeyConfig{
 			APIKeysPerUserPerAPI: 10,
-			Algorithm:            constants.HashingAlgorithmSHA256,
 			MinKeyLength:         constants.DefaultMinAPIKeyLength,
 			MaxKeyLength:         constants.DefaultMaxAPIKeyLength,
+			Algorithm:            constants.HashingAlgorithmSHA256,
 		},
 	}
 }
@@ -1382,17 +1382,14 @@ func (c *Config) validateAPIKeyConfig() error {
 			c.APIKey.MinKeyLength, c.APIKey.MaxKeyLength)
 	}
 
-	// If hashing is enabled but no algorithm is provided, default to SHA256
+	// Default algorithm if not set
 	if c.APIKey.Algorithm == "" {
 		c.APIKey.Algorithm = constants.HashingAlgorithmSHA256
-		return nil
+	}
+	if c.APIKey.Algorithm != constants.HashingAlgorithmSHA256 {
+		return fmt.Errorf("api_key.algorithm must be %q, got: %q", constants.HashingAlgorithmSHA256, c.APIKey.Algorithm)
 	}
 
-	// Only SHA256 is supported
-	if strings.ToLower(c.APIKey.Algorithm) != constants.HashingAlgorithmSHA256 {
-		return fmt.Errorf("api_key.algorithm must be %s, got: %s",
-			constants.HashingAlgorithmSHA256, c.APIKey.Algorithm)
-	}
 	return nil
 }
 

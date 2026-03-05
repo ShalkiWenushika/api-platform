@@ -33,6 +33,7 @@ import (
 // LLMProxyAPIKeyService handles API key management for LLM proxies
 type LLMProxyAPIKeyService struct {
 	llmProxyRepo         repository.LLMProxyRepository
+	apiRepo              repository.APIRepository
 	gatewayRepo          repository.GatewayRepository
 	gatewayEventsService *GatewayEventsService
 	slogger              *slog.Logger
@@ -41,12 +42,14 @@ type LLMProxyAPIKeyService struct {
 // NewLLMProxyAPIKeyService creates a new LLM proxy API key service instance
 func NewLLMProxyAPIKeyService(
 	llmProxyRepo repository.LLMProxyRepository,
+	apiRepo repository.APIRepository,
 	gatewayRepo repository.GatewayRepository,
 	gatewayEventsService *GatewayEventsService,
 	slogger *slog.Logger,
 ) *LLMProxyAPIKeyService {
 	return &LLMProxyAPIKeyService{
 		llmProxyRepo:         llmProxyRepo,
+		apiRepo:              apiRepo,
 		gatewayRepo:          gatewayRepo,
 		gatewayEventsService: gatewayEventsService,
 		slogger:              slogger,
@@ -91,30 +94,30 @@ func (s *LLMProxyAPIKeyService) CreateLLMProxyAPIKey(
 		}
 	}
 
-	displayName := name
-	if req.DisplayName != nil && *req.DisplayName != "" {
-		displayName = *req.DisplayName
-	}
-
-	gateways, err := s.gatewayRepo.GetByOrganizationID(orgID)
+	// Get gateways where the LLM proxy is deployed (using artifact UUID)
+	// The proxy UUID is the artifact UUID due to FK constraint
+	gateways, err := s.apiRepo.GetAPIGatewaysWithDetails(proxy.UUID, orgID)
 	if err != nil {
 		s.slogger.Error("Failed to get gateways for API key broadcast", "proxyId", proxyID, "error", err)
-		return nil, fmt.Errorf("failed to get gateways: %w", err)
+		return nil, fmt.Errorf("failed to get gateways for deployed LLM proxy: %w", err)
 	}
 
 	if len(gateways) == 0 {
-		s.slogger.Warn("No gateways found for organization", "organizationId", orgID)
+		s.slogger.Warn("No gateways found with LLM proxy deployment", "proxyId", proxyID, "organizationId", orgID)
 		return nil, constants.ErrGatewayUnavailable
 	}
 
-	operations := "[\"*\"]"
+	// Hash the API key using SHA-256
+	apiKeyHashes, err := utils.HashAPIKey(apiKey, []string{"sha256"})
+	if err != nil {
+		s.slogger.Error("Failed to hash LLM proxy API key", "proxyId", proxyID, "error", err)
+		return nil, fmt.Errorf("failed to hash API key: %w", err)
+	}
 
 	event := &model.APIKeyCreatedEvent{
-		ApiId:       proxyID,
-		Name:        name,
-		DisplayName: displayName,
-		ApiKey:      apiKey,
-		Operations:  operations,
+		ApiId:        proxyID,
+		Name:         name,
+		ApiKeyHashes: apiKeyHashes,
 	}
 
 	if req.ExpiresAt != nil {

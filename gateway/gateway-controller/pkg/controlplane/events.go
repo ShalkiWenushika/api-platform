@@ -135,17 +135,16 @@ type APIDeletedEvent struct {
 
 // APIKeyCreatedEventPayload represents the payload of an API key created event.
 type APIKeyCreatedEventPayload struct {
-	ApiId         string  `json:"apiId"`
-	ApiKey        string  `json:"apiKey"`         // Plain text API key (will be hashed by gateway)
-	Name          string  `json:"name,omitempty"` //  URL-safe identifier (3-63 chars, lowercase alphanumeric with hyphens)
-	ExternalRefId *string `json:"externalRefId,omitempty"`
-	Operations    string  `json:"operations"`
-	ExpiresAt     *string `json:"expiresAt,omitempty"` // ISO 8601 format
+	ApiId         string            `json:"apiId"`
+	ApiKeyHashes  map[string]string `json:"apiKeyHashes"`  // Pre-hashed API key values (e.g. {"sha256": "hash_value"})
+	MaskedApiKey  string            `json:"maskedApiKey"`  // Masked API key for display purposes
+	Name          string            `json:"name,omitempty"` //  URL-safe identifier (3-63 chars, lowercase alphanumeric with hyphens)
+	ExternalRefId *string           `json:"externalRefId,omitempty"`
+	ExpiresAt     *string           `json:"expiresAt,omitempty"` // ISO 8601 format
 	ExpiresIn     *struct {
 		Duration int    `json:"duration,omitempty"`
 		Unit     string `json:"unit,omitempty"`
 	} `json:"expiresIn,omitempty"`
-	DisplayName *string `json:"displayName,omitempty"`
 }
 
 // APIKeyCreatedEvent represents the complete API key created event
@@ -158,17 +157,16 @@ type APIKeyCreatedEvent struct {
 }
 
 type APIKeyUpdatedEventPayload struct {
-	ApiId         string  `json:"apiId"`
-	KeyName       string  `json:"keyName"`
-	ApiKey        string  `json:"apiKey"` // Plain text API key (will be hashed by gateway)
-	ExternalRefId string  `json:"externalRefId"`
-	Operations    string  `json:"operations"`
-	ExpiresAt     *string `json:"expiresAt,omitempty"` // ISO 8601 format
+	ApiId         string            `json:"apiId"`
+	KeyName       string            `json:"keyName"`
+	ApiKeyHashes  map[string]string `json:"apiKeyHashes"`  // Pre-hashed API key values (e.g. {"sha256": "hash_value"})
+	MaskedApiKey  string            `json:"maskedApiKey"`  // Masked API key for display purposes
+	ExternalRefId string            `json:"externalRefId"`
+	ExpiresAt     *string           `json:"expiresAt,omitempty"` // ISO 8601 format
 	ExpiresIn     *struct {
 		Duration int    `json:"duration,omitempty"`
 		Unit     string `json:"unit,omitempty"`
 	} `json:"expiresIn,omitempty"`
-	DisplayName string `json:"displayName"`
 }
 
 // APIKeyUpdatedEvent represents the complete API key updated event
@@ -193,4 +191,33 @@ type APIKeyRevokedEvent struct {
 	Timestamp     string                    `json:"timestamp"`
 	CorrelationID string                    `json:"correlationId"`
 	UserId        string                    `json:"userId"`
+}
+
+// APIKeyForBatchSync represents a single API key in a batch sync event.
+// This matches the APIKeyCreatedEvent structure from platform-api but with hashes instead of plain keys.
+type APIKeyForBatchSync struct {
+	ApiId         string            `json:"apiId"`
+	Name          string            `json:"name,omitempty"`
+	ApiKeyHashes  map[string]string `json:"apiKeyHashes"` // e.g., {"sha256": "hash_value"}
+	ExternalRefId *string           `json:"externalRefId,omitempty"`
+	ExpiresAt     *string           `json:"expiresAt,omitempty"`
+	ExpiresIn     *struct {
+		Duration int    `json:"duration,omitempty"`
+		Unit     string `json:"unit,omitempty"`
+	} `json:"expiresIn,omitempty"`
+}
+
+// APIKeysBatchSyncEventPayload represents the payload of a batch API keys sync event
+type APIKeysBatchSyncEventPayload struct {
+	ApiId   string                   `json:"apiId"`
+	ApiKeys []APIKeyForBatchSync     `json:"apiKeys"`
+}
+
+// APIKeysBatchSyncEvent represents the complete batch API keys sync event
+type APIKeysBatchSyncEvent struct {
+	Type          string                       `json:"type"`
+	Payload       APIKeysBatchSyncEventPayload `json:"payload"`
+	Timestamp     string                       `json:"timestamp"`
+	CorrelationID string                       `json:"correlationId"`
+	UserId        string                       `json:"userId"`
 }

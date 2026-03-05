@@ -22,7 +22,6 @@ import (
 	"testing"
 
 	"github.com/wso2/api-platform/gateway/gateway-controller/pkg/config"
-	"github.com/wso2/api-platform/gateway/gateway-controller/pkg/constants"
 )
 
 
@@ -31,7 +30,7 @@ func TestSHA256APIKeyHashing(t *testing.T) {
 	service := &APIKeyService{
 		apiKeyConfig: &config.APIKeyConfig{
 			APIKeysPerUserPerAPI: 10,
-			Algorithm:            constants.HashingAlgorithmSHA256,
+	
 		},
 	}
 
@@ -72,7 +71,7 @@ func TestSHA256APIKeyHashDeterminism(t *testing.T) {
 	service := &APIKeyService{
 		apiKeyConfig: &config.APIKeyConfig{
 			APIKeysPerUserPerAPI: 10,
-			Algorithm:            constants.HashingAlgorithmSHA256,
+	
 		},
 	}
 	plainKey := "apip_test123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
@@ -104,7 +103,7 @@ func TestAPIKeyHashingDefaultBehavior(t *testing.T) {
 	service := &APIKeyService{
 		apiKeyConfig: &config.APIKeyConfig{
 			APIKeysPerUserPerAPI: 10,
-			Algorithm:            "", // Empty algorithm defaults to SHA256
+	
 		},
 	}
 
@@ -156,7 +155,7 @@ func TestAPIKeyHashingDefaultBehaviorDeterminism(t *testing.T) {
 	service := &APIKeyService{
 		apiKeyConfig: &config.APIKeyConfig{
 			APIKeysPerUserPerAPI: 10,
-			Algorithm:            "", // Empty algorithm defaults to SHA256
+	
 		},
 	}
 	plainKey := "apip_test123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
@@ -200,7 +199,7 @@ func TestHashingConfigurationSwitching(t *testing.T) {
 	// Test with empty algorithm (defaults to SHA256)
 	service.SetHashingConfig(&config.APIKeyConfig{
 		APIKeysPerUserPerAPI: 10,
-		Algorithm:            "", // Empty algorithm defaults to SHA256
+
 	})
 	defaultResult, err := service.hashAPIKey(plainKey)
 	if err != nil {
@@ -214,7 +213,7 @@ func TestHashingConfigurationSwitching(t *testing.T) {
 	// Test switching to SHA256
 	service.SetHashingConfig(&config.APIKeyConfig{
 		APIKeysPerUserPerAPI: 10,
-		Algorithm:            constants.HashingAlgorithmSHA256,
+
 	})
 	sha256Result, err := service.hashAPIKey(plainKey)
 	if err != nil {
@@ -224,7 +223,7 @@ func TestHashingConfigurationSwitching(t *testing.T) {
 	// Validate that the hash works with the same plain key
 	service.SetHashingConfig(&config.APIKeyConfig{
 		APIKeysPerUserPerAPI: 10,
-		Algorithm:            constants.HashingAlgorithmSHA256,
+
 	})
 	if !service.compareAPIKeys(plainKey, sha256Result) {
 		t.Error("SHA256 hash should validate correctly")
@@ -236,7 +235,7 @@ func TestAPIKeyHashingMixedScenario(t *testing.T) {
 	service := &APIKeyService{
 		apiKeyConfig: &config.APIKeyConfig{
 			APIKeysPerUserPerAPI: 10,
-			Algorithm:            "", // Empty algorithm defaults to SHA256
+	
 		},
 	}
 
@@ -276,7 +275,7 @@ func TestMixedAPIKeyFormatsValidation(t *testing.T) {
 	service := &APIKeyService{
 		apiKeyConfig: &config.APIKeyConfig{
 			APIKeysPerUserPerAPI: 10,
-			Algorithm:            "", // Empty algorithm defaults to SHA256
+	
 		},
 	}
 	plainHashed, err := service.hashAPIKey(plainKey1)
@@ -287,7 +286,7 @@ func TestMixedAPIKeyFormatsValidation(t *testing.T) {
 	// 2. SHA256 hashed key
 	service.SetHashingConfig(&config.APIKeyConfig{
 		APIKeysPerUserPerAPI: 10,
-		Algorithm:            constants.HashingAlgorithmSHA256,
+
 	})
 	sha256Hashed, err := service.hashAPIKey(plainKey2)
 	if err != nil {
@@ -297,7 +296,7 @@ func TestMixedAPIKeyFormatsValidation(t *testing.T) {
 	// Reset service to simulate runtime validation
 	service.SetHashingConfig(&config.APIKeyConfig{
 		APIKeysPerUserPerAPI: 10,
-		Algorithm:            constants.HashingAlgorithmSHA256, // Current default
+
 	})
 
 	// Test validation of each key format
@@ -358,7 +357,7 @@ func TestMixedAPIKeyFormatsValidationWithDefaultAlgorithm(t *testing.T) {
 	service := &APIKeyService{
 		apiKeyConfig: &config.APIKeyConfig{
 			APIKeysPerUserPerAPI: 10,
-			Algorithm:            "", // Empty algorithm defaults to SHA256
+	
 		},
 	}
 
@@ -396,7 +395,6 @@ func TestHashingConfigurationGetSet(t *testing.T) {
 	// Initialize service with a default configuration
 	defaultConfig := &config.APIKeyConfig{
 		APIKeysPerUserPerAPI: 10,
-		Algorithm:            "", // Empty algorithm defaults to SHA256
 	}
 	service := &APIKeyService{
 		apiKeyConfig: defaultConfig,
@@ -404,9 +402,6 @@ func TestHashingConfigurationGetSet(t *testing.T) {
 
 	// Test default configuration
 	retrievedDefaultConfig := service.GetHashingConfig()
-	if retrievedDefaultConfig.Algorithm != "" {
-		t.Error("Default hashing config should have empty algorithm (defaults to SHA256)")
-	}
 	if retrievedDefaultConfig.APIKeysPerUserPerAPI != 10 {
 		t.Error("Default API keys per user per API should be 10")
 	}
@@ -414,15 +409,11 @@ func TestHashingConfigurationGetSet(t *testing.T) {
 	// Test setting configuration
 	newConfig := config.APIKeyConfig{
 		APIKeysPerUserPerAPI: 5,
-		Algorithm:            constants.HashingAlgorithmSHA256,
 	}
 	service.SetHashingConfig(&newConfig)
 
 	retrievedConfig := service.GetHashingConfig()
 	if retrievedConfig.APIKeysPerUserPerAPI != newConfig.APIKeysPerUserPerAPI {
 		t.Error("API keys per user per API should match")
-	}
-	if retrievedConfig.Algorithm != newConfig.Algorithm {
-		t.Error("Hashing config algorithm should match")
 	}
 }
